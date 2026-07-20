@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/O2eg/pg_play/schema/pg_play-v1.schema.json",
+  "title": "pg_play PostgreSQL experiment manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "pg_play/v1"},
+    "kind": {"const": "PostgreSQLExperiment"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,62}$"}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stand", "workload"],
+      "properties": {
+        "artifact_root": {"type": "string", "minLength": 1},
+        "stand": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["config"],
+          "properties": {
+            "config": {"type": "string", "minLength": 1},
+            "project": {"type": "string", "minLength": 1}
+          }
+        },
+        "configurator": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"inputs": {"type": "object"}}
+        },
+        "workload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["project", "profiles"],
+          "properties": {
+            "project": {"type": "string", "minLength": 1},
+            "profiles": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "scale": {"type": "number", "exclusiveMinimum": 0},
+            "database": {"type": "string", "minLength": 1},
+            "user": {"type": "string", "minLength": 1},
+            "install": {"type": "boolean"},
+            "stop_after_report": {"type": "boolean"},
+            "resource_guard": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "disk_max_used_pct": {"type": "integer", "minimum": 0, "maximum": 100},
+                "mem_min_available_pct": {"type": "integer", "minimum": 0, "maximum": 100},
+                "mem_min_available_mb": {"type": "integer", "minimum": 0},
+                "cpu_max_pct": {"type": "integer", "minimum": 0, "maximum": 100},
+                "cpu_window_seconds": {"type": "integer", "minimum": 1},
+                "check_interval": {"type": "integer", "minimum": 1}
+              }
+            }
+          }
+        },
+        "diagnostics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["one-shot", "snapshots"]},
+            "collection_mode": {"enum": ["remote-db-only", "local", "remote"]},
+            "duration_seconds": {"type": "number", "minimum": 30, "maximum": 86400},
+            "interval_seconds": {"type": "number", "minimum": 5, "maximum": 600}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"mode": {"const": "one-shot"}}, "required": ["mode"]},
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {"required": ["duration_seconds"]},
+                    {"required": ["interval_seconds"]}
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

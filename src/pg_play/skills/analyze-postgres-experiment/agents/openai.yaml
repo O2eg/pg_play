@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze PostgreSQL Experiment"
+  short_description: "Analyze and compare pg_diag experiment reports"
+  default_prompt: "Use $analyze-postgres-experiment to analyze and compare PostgreSQL experiment reports."

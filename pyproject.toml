@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pg-play"
+version = "0.1.0"
+description = "PostgreSQL experiment orchestrator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "O2eg", email = "oleg.ispu@yandex.ru" },
+]
+keywords = ["postgresql", "orchestration", "diagnostics", "testing", "dba"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  "mcp>=1.28,<2",
+  "pg-configurator>=0.9,<1",
+  "pg-diag>=0.10,<1",
+  "pg-stand>=0.2,<1",
+  "pg-workload>=0.2,<1",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8.3,<9",
+  "ruff>=0.12,<1",
+  "twine>=6,<7",
+]
+
+[project.scripts]
+pg-play = "pg_play.cli:main"
+pg-play-mcp = "pg_play.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/O2eg/pg_play"
+Repository = "https://github.com/O2eg/pg_play"
+Issues = "https://github.com/O2eg/pg_play/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pg_play*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+pg_play = [
+  "schema/*.json",
+  "skills/*/SKILL.md",
+  "skills/*/agents/*.yaml",
+  "skills/*/references/*.md",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
