@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
 
 from pg_play.manifest import ManifestError, load_manifest
 
-STAND_CONFIG = Path("/home/oleg/Desktop/dev/pg_stand/src/pg_stand/configs/single.yaml")
+STAND_CONFIG = Path(str(files("pg_stand").joinpath("configs").joinpath("single.yaml")))
 
 
 def _write_manifest(tmp_path: Path, diagnostics: str = "") -> Path:

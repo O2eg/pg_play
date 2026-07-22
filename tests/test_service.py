@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import pytest
 from pg_play.runner import ComponentInvocation
 from pg_play.service import OrchestrationError, PgPlayService
 
-STAND_CONFIG = Path("/home/oleg/Desktop/dev/pg_stand/src/pg_stand/configs/single.yaml")
+STAND_CONFIG = Path(str(files("pg_stand").joinpath("configs").joinpath("single.yaml")))
 
 
 def _envelope(
