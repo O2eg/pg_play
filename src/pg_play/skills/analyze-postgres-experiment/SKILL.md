@@ -1,11 +1,16 @@
 ---
 name: analyze-postgres-experiment
-description: Validate, inspect, and compare pg_diag artifacts produced by pg_play experiments, then design controlled follow-up iterations. Use when a user asks what changed between PostgreSQL runs, whether a configuration improved behavior, why a report is partial, which diagnostic signals deserve attention, or what single configuration or workload change to test next.
+description: Validate, inspect, and compare pg_diag and pg_perf_bench artifacts produced by pg_play experiments, then design controlled follow-up iterations. Use when a user asks what changed between PostgreSQL runs, whether a configuration improved behavior, why a report is partial, which diagnostic or benchmark signals deserve attention, or what single configuration or workload change to test next.
 ---
 
 # Analyze PostgreSQL Experiment
 
 Use `inspect_diagnostic_report` and `compare_diagnostic_reports` before interpreting report results. These tools validate the artifact contract and prevent analysis of malformed or incompatible JSON.
+
+For benchmark artifacts, use `inspect_benchmark_report` and
+`compare_benchmark_reports`. Confirm equal iteration parameters and values,
+benchmark methodology, workload definition, client placement, PostgreSQL
+configuration, and stand resources before interpreting TPS deltas.
 
 ## Single report
 

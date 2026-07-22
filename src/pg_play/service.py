@@ -14,14 +14,47 @@ from docker.utils import parse_bytes
 from pg_stand.config import MANAGED_POSTGRES_PARAMETERS, StandConfig, load_config
 from pg_stand.credentials import credential_paths
 from pg_stand.database_credentials import read_database_credentials
+from pg_stand.runtime_common import postgres_data_paths
 
-from pg_play.contract import canonical_hash
-from pg_play.manifest import ExperimentManifest, load_manifest
-from pg_play.report import compare_reports, inspect_report
+from pg_play.contract import canonical_hash, validate_capabilities
+from pg_play.manifest import BenchmarkSpec, ExperimentManifest, load_manifest
+from pg_play.report import compare_benchmark_summaries, compare_reports, inspect_report
 from pg_play.runner import ComponentInvocation, ComponentRunner
 from pg_play.state import read_state, write_json, write_state, write_text
 
 _RUN_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
+_REQUIRED_COMPONENT_COMMANDS = {
+    "pg_configurator": {"capabilities", "generate", "validate-input"},
+    "pg_stand": {"apply", "capabilities", "down", "plan", "status", "up", "validate"},
+    "pg_workload": {
+        "capabilities",
+        "install",
+        "plan",
+        "prepare-db",
+        "start",
+        "stop",
+        "validate",
+    },
+    "pg_diag": {
+        "capabilities",
+        "explain-plan",
+        "one-shot",
+        "snapshots",
+        "summarize",
+        "validate",
+    },
+    "pg_perf_bench": {
+        "benchmark",
+        "capabilities",
+        "join",
+        "join-tasks",
+        "plan",
+        "profiles",
+        "summarize",
+        "validate",
+        "validate-artifact",
+    },
+}
 
 
 class OrchestrationError(RuntimeError):
@@ -36,26 +69,31 @@ class PgPlayService:
         components = (
             [component]
             if component is not None
-            else ["pg_configurator", "pg_stand", "pg_workload", "pg_diag"]
+            else [
+                "pg_configurator",
+                "pg_stand",
+                "pg_workload",
+                "pg_diag",
+                "pg_perf_bench",
+            ]
         )
-        arguments = {
-            "pg_configurator": ("--capabilities",),
-            "pg_stand": ("capabilities",),
-            "pg_workload": ("--component-capabilities",),
-            "pg_diag": ("--component-capabilities",),
-        }
-        unknown = sorted(set(components).difference(arguments))
+        unknown = sorted(set(components).difference(_REQUIRED_COMPONENT_COMMANDS))
         if unknown:
             raise OrchestrationError("unknown component(s): " + ", ".join(unknown))
-        return {
-            name: self._invoke(
+        result = {}
+        for name in components:
+            envelope = self._invoke(
                 name,
-                arguments[name],
+                ("--component-capabilities",),
                 request_id=f"capabilities-{name}",
                 timeout_seconds=30,
-            )["result"]
-            for name in components
-        }
+            )
+            result[name] = validate_capabilities(
+                envelope["result"],
+                expected_component=name,
+                required_commands=_REQUIRED_COMPONENT_COMMANDS[name],
+            )
+        return result
 
     def validate_experiment(self, manifest_path: str | Path) -> dict[str, Any]:
         manifest = load_manifest(manifest_path)
@@ -103,6 +141,56 @@ class PgPlayService:
             ),
             {"succeeded"},
         )
+        diagnostic_validation = self._require(
+            self._invoke(
+                "pg_diag",
+                ("validate",),
+                request_id=f"{manifest.experiment_id}-validate-diag-content",
+            ),
+            {"succeeded"},
+        )
+        diagnostic_plan = self._require(
+            self._invoke(
+                "pg_diag",
+                (
+                    "explain-plan",
+                    "--pg-version",
+                    str(base_config.postgres.version * 10_000),
+                    "--run-mode",
+                    manifest.diagnostics.mode,
+                    "--collection-mode",
+                    manifest.diagnostics.collection_mode,
+                ),
+                request_id=f"{manifest.experiment_id}-validate-diag-plan",
+            ),
+            {"succeeded"},
+        )
+        benchmark_validation = self._require(
+            self._invoke(
+                "pg_perf_bench",
+                ("validate",),
+                request_id=f"{manifest.experiment_id}-validate-benchmark-content",
+            ),
+            {"succeeded"},
+        )
+        benchmark_plan = None
+        if manifest.phases.benchmark:
+            assert manifest.benchmark is not None
+            benchmark_plan = self._require(
+                self._invoke(
+                    "pg_perf_bench",
+                    (
+                        "plan",
+                        *self._benchmark_args(
+                            manifest.benchmark,
+                            base_config,
+                            manifest.artifact_root / ".benchmark-validation",
+                        ),
+                    ),
+                    request_id=f"{manifest.experiment_id}-validate-benchmark-plan",
+                ),
+                {"succeeded"},
+            )
         return {
             "schema_version": "pg_play/validation-v1",
             "valid": True,
@@ -112,6 +200,14 @@ class PgPlayService:
                 "pg_configurator": config_result,
                 "pg_stand": stand_result,
                 "pg_workload": workload_result,
+                "pg_diag": {
+                    "content": diagnostic_validation,
+                    "plan": diagnostic_plan,
+                },
+                "pg_perf_bench": {
+                    "content": benchmark_validation,
+                    "plan": benchmark_plan,
+                },
             },
         }
 
@@ -168,6 +264,7 @@ class PgPlayService:
                     "plan",
                     *self._workload_common_args(manifest, connection),
                     "--operation=prepare-db",
+                    *(("--recreate",) if manifest.phases.recreate_workload_database else ()),
                 ),
                 request_id=f"{manifest.experiment_id}-plan-workload-prepare-db",
             ),
@@ -196,6 +293,14 @@ class PgPlayService:
                     *self._profile_args(manifest),
                     "--enable-selected",
                     "--run-immediately",
+                    *(
+                        (
+                            "--job-interval-seconds",
+                            str(manifest.workload.job_interval_seconds),
+                        )
+                        if manifest.workload.job_interval_seconds is not None
+                        else ()
+                    ),
                 ),
                 request_id=f"{manifest.experiment_id}-plan-workload-scheduler",
             ),
@@ -217,6 +322,32 @@ class PgPlayService:
             ),
             {"succeeded"},
         )
+        benchmark_validation = self._require(
+            self._invoke(
+                "pg_perf_bench",
+                ("validate",),
+                request_id=f"{manifest.experiment_id}-plan-benchmark-content",
+            ),
+            {"succeeded"},
+        )
+        benchmark_plan = None
+        if manifest.phases.benchmark:
+            assert manifest.benchmark is not None
+            benchmark_plan = self._require(
+                self._invoke(
+                    "pg_perf_bench",
+                    (
+                        "plan",
+                        *self._benchmark_args(
+                            manifest.benchmark,
+                            resolved_config,
+                            manifest.artifact_root / ".benchmark-plan",
+                        ),
+                    ),
+                    request_id=f"{manifest.experiment_id}-plan-benchmark",
+                ),
+                {"succeeded"},
+            )
         workload_versions = {
             envelope["component_version"]
             for envelope in (prepare_plan, install_plan, scheduler_plan)
@@ -231,6 +362,8 @@ class PgPlayService:
                 *install_plan.get("warnings", []),
                 *scheduler_plan.get("warnings", []),
                 *diagnostic_plan.get("warnings", []),
+                *benchmark_validation.get("warnings", []),
+                *(benchmark_plan.get("warnings", []) if benchmark_plan else []),
             }
         )
         if stand_managed_parameters:
@@ -247,6 +380,7 @@ class PgPlayService:
                 "pg_stand": stand_envelope["component_version"],
                 "pg_workload": workload_versions.pop(),
                 "pg_diag": diagnostic_plan["component_version"],
+                "pg_perf_bench": benchmark_validation["component_version"],
             },
             "configuration": {
                 "artifact_hash": config_artifact["artifact_hash"],
@@ -256,6 +390,11 @@ class PgPlayService:
                 "parameters": candidate_parameters,
                 "stand_managed_parameters": stand_managed_parameters,
             },
+            "phases": {
+                "benchmark": manifest.phases.benchmark,
+                "workload_diagnostics": manifest.phases.workload_diagnostics,
+                "recreate_workload_database": manifest.phases.recreate_workload_database,
+            },
             "stand": stand_envelope["result"],
             "workload": {
                 "prepare_db": self._compact_workload_plan(prepare_plan["result"]),
@@ -263,6 +402,7 @@ class PgPlayService:
                 "scheduler": self._compact_workload_plan(scheduler_plan["result"]),
             },
             "diagnostics": diagnostic_plan["result"],
+            "benchmark": benchmark_plan["result"] if benchmark_plan is not None else None,
             "warnings": warnings,
         }
         stable_plan["plan_hash"] = canonical_hash(stable_plan)
@@ -346,6 +486,7 @@ class PgPlayService:
         )
         write_state(state_path, state)
         workload_stop_needed = False
+        partial_result = False
         try:
             stand_plan = plan["stand"]
             required_action = stand_plan["required_action"]
@@ -384,20 +525,66 @@ class PgPlayService:
                 {"succeeded"},
             )
             secret_context = self._credential_context(manifest, config, connection)
+            if manifest.phases.benchmark:
+                assert manifest.benchmark is not None
+                benchmark = self._invoke(
+                    "pg_perf_bench",
+                    (
+                        *self._benchmark_args(
+                            manifest.benchmark,
+                            config,
+                            run_directory / "benchmark",
+                        ),
+                        "--plan-hash",
+                        plan["benchmark"]["plan_hash"],
+                    ),
+                    request_id=f"{manifest.experiment_id}-{run_id}-benchmark",
+                    environment={
+                        **self._connection_environment(config, None),
+                        "PGPASSWORD": secret_context["admin_password"],
+                    },
+                    timeout_seconds=max(
+                        900,
+                        manifest.benchmark.command_timeout
+                        * (len(manifest.benchmark.iterations) * 2 + 2),
+                    ),
+                )
+                self._step(
+                    state,
+                    state_path,
+                    "benchmark",
+                    benchmark,
+                    {"succeeded", "partial"},
+                )
+                state["artifacts"].extend(benchmark.get("artifacts") or [])
+                partial_result = benchmark["status"] == "partial"
+                write_state(state_path, state)
+            if not manifest.phases.workload_diagnostics:
+                state["state"] = "partial" if partial_result else "succeeded"
+                write_state(state_path, state)
+                return state
+
             common_args = self._workload_common_args(manifest, connection)
             environment = self._connection_environment(config, secret_context["workload_password"])
+            prepare_args = [
+                "prepare-db",
+                *common_args,
+            ]
+            if manifest.phases.recreate_workload_database:
+                prepare_args.append("--recreate")
+            prepare_args.extend(
+                (
+                    "--plan-hash",
+                    plan["workload"]["prepare_db"]["plan_hash"],
+                )
+            )
             self._step(
                 state,
                 state_path,
                 "prepare-db",
                 self._invoke(
                     "pg_workload",
-                    (
-                        "prepare-db",
-                        *common_args,
-                        "--plan-hash",
-                        plan["workload"]["prepare_db"]["plan_hash"],
-                    ),
+                    tuple(prepare_args),
                     request_id=f"{manifest.experiment_id}-{run_id}-prepare-db",
                     environment=environment,
                     timeout_seconds=900,
@@ -437,6 +624,14 @@ class PgPlayService:
                         *self._profile_args(manifest),
                         "--enable-selected",
                         "--run-immediately",
+                        *(
+                            (
+                                "--job-interval-seconds",
+                                str(manifest.workload.job_interval_seconds),
+                            )
+                            if manifest.workload.job_interval_seconds is not None
+                            else ()
+                        ),
                         "--plan-hash",
                         plan["workload"]["scheduler"]["plan_hash"],
                     ),
@@ -460,7 +655,8 @@ class PgPlayService:
                 {"succeeded", "partial"},
             )
             state["artifacts"].extend(diagnostic.get("artifacts") or [])
-            state["state"] = "partial" if diagnostic["status"] == "partial" else "succeeded"
+            partial_result = partial_result or diagnostic["status"] == "partial"
+            state["state"] = "partial" if partial_result else "succeeded"
             write_state(state_path, state)
             return state
         except Exception as exc:
@@ -514,6 +710,41 @@ class PgPlayService:
         manifest = load_manifest(manifest_path)
         return read_state(manifest.artifact_root / run_id / "state.json")
 
+    def teardown_experiment(
+        self,
+        manifest_path: str | Path,
+        *,
+        clear_stand_data: bool = False,
+    ) -> dict[str, Any]:
+        """Stop owned workload processes and remove the manifest-owned stand."""
+        manifest = load_manifest(manifest_path)
+        workload = self._invoke(
+            "pg_workload",
+            ("stop", "--root", str(manifest.workload.project)),
+            request_id=f"{manifest.experiment_id}-teardown-workload",
+        )
+        if workload["status"] not in {"succeeded", "blocked"}:
+            self._require(workload, {"succeeded", "blocked"})
+        arguments = ["--config", str(manifest.stand_config), "down"]
+        if clear_stand_data:
+            arguments.append("--clear-data")
+        stand = self._require(
+            self._invoke(
+                "pg_stand",
+                tuple(arguments),
+                request_id=f"{manifest.experiment_id}-teardown-stand",
+                cwd=manifest.stand_project,
+                timeout_seconds=900,
+            ),
+            {"succeeded"},
+        )
+        return {
+            "experiment_id": manifest.experiment_id,
+            "clear_stand_data": clear_stand_data,
+            "workload": workload,
+            "stand": stand,
+        }
+
     @staticmethod
     def inspect_report(path: str | Path) -> dict[str, Any]:
         return inspect_report(path)
@@ -521,6 +752,122 @@ class PgPlayService:
     @staticmethod
     def compare_reports(baseline: str | Path, candidate: str | Path) -> dict[str, Any]:
         return compare_reports(baseline, candidate)
+
+    def inspect_benchmark_report(self, path: str | Path) -> dict[str, Any]:
+        report_path = Path(path).expanduser().resolve()
+        envelope = self._require(
+            self._invoke(
+                "pg_perf_bench",
+                ("summarize", str(report_path)),
+                request_id=f"inspect-benchmark-{canonical_hash(str(report_path))[7:19]}",
+            ),
+            {"succeeded"},
+        )
+        return {
+            "path": str(report_path),
+            "summary": envelope["result"],
+            "artifacts": envelope.get("artifacts") or [],
+        }
+
+    def benchmark_profiles(self) -> dict[str, Any]:
+        """Return the installed pg_perf_bench maximum-TPS profile catalog."""
+        envelope = self._require(
+            self._invoke(
+                "pg_perf_bench",
+                ("profiles",),
+                request_id="benchmark-profiles",
+            ),
+            {"succeeded"},
+        )
+        return envelope["result"]
+
+    def benchmark_join_tasks(self) -> dict[str, Any]:
+        """Return the installed pg_perf_bench JOIN scenario catalog."""
+        envelope = self._require(
+            self._invoke(
+                "pg_perf_bench",
+                ("join-tasks",),
+                request_id="benchmark-join-tasks",
+            ),
+            {"succeeded"},
+        )
+        return envelope["result"]
+
+    def compare_benchmark_reports(
+        self,
+        baseline: str | Path,
+        candidate: str | Path,
+    ) -> dict[str, Any]:
+        baseline_result = self.inspect_benchmark_report(baseline)
+        candidate_result = self.inspect_benchmark_report(candidate)
+        return {
+            "baseline": baseline_result,
+            "candidate": candidate_result,
+            **compare_benchmark_summaries(
+                baseline_result["summary"],
+                candidate_result["summary"],
+            ),
+        }
+
+    def join_benchmark_reports(
+        self,
+        report_paths: list[str],
+        join_task: str,
+        output_directory: str,
+        report_name: str,
+    ) -> dict[str, Any]:
+        """Join an exact, reviewed report set through pg_perf_bench."""
+        paths = [Path(value).expanduser().resolve() for value in report_paths]
+        if len(paths) < 2:
+            raise OrchestrationError("at least two benchmark reports are required")
+        if len(paths) != len(set(paths)):
+            raise OrchestrationError("benchmark report paths must be unique")
+        missing = [str(path) for path in paths if not path.is_file()]
+        if missing:
+            raise OrchestrationError("benchmark report does not exist: " + ", ".join(missing))
+        if not join_task.strip():
+            raise OrchestrationError("join_task must be non-empty")
+        if not _RUN_ID_RE.fullmatch(report_name):
+            raise OrchestrationError(f"report_name must match {_RUN_ID_RE.pattern}")
+        output = Path(output_directory).expanduser().resolve()
+        arguments = [
+            "join",
+            "--join-task",
+            join_task,
+            "--reference-report",
+            str(paths[0]),
+            "--report-name",
+            report_name,
+            "--out",
+            str(output),
+            "--log-dir",
+            str(output / "log"),
+        ]
+        for path in paths:
+            arguments.extend(("--report", str(path)))
+        request_hash = canonical_hash(
+            {
+                "paths": [str(path) for path in paths],
+                "join_task": join_task,
+                "output": str(output),
+                "report_name": report_name,
+            }
+        )[7:19]
+        envelope = self._require(
+            self._invoke(
+                "pg_perf_bench",
+                tuple(arguments),
+                request_id=f"join-benchmark-{request_hash}",
+            ),
+            {"succeeded"},
+        )
+        return {
+            "report_paths": [str(path) for path in paths],
+            "join_task": join_task,
+            "report_name": envelope["result"]["report_name"],
+            "outputs": envelope["result"]["outputs"],
+            "artifacts": envelope.get("artifacts") or [],
+        }
 
     def _invoke(
         self,
@@ -643,7 +990,7 @@ class PgPlayService:
         manifest: ExperimentManifest,
         connection: dict[str, Any],
     ) -> tuple[str, ...]:
-        return (
+        args = [
             "--root",
             str(manifest.workload.project),
             "--target=external",
@@ -653,13 +1000,13 @@ class PgPlayService:
             str(connection["port"]),
             "--database",
             str(connection["database"]),
-            "--workload-user",
+            "--user",
             str(connection["workload_user"]),
             "--admin-user",
             str(connection["admin_user"]),
             "--passfile",
             str(connection["passfile"]),
-            "--pg-major",
+            "--pg-version",
             str(connection["pg_major"]),
             "--scale",
             str(manifest.workload.scale),
@@ -675,7 +1022,92 @@ class PgPlayService:
             str(manifest.workload.resource_guard.cpu_window_seconds),
             "--resource-check-interval",
             str(manifest.workload.resource_guard.check_interval),
+        ]
+        if manifest.workload.pgbench_duration_seconds is not None:
+            args.extend(
+                (
+                    "--pgbench-duration",
+                    str(manifest.workload.pgbench_duration_seconds),
+                )
+            )
+        return tuple(args)
+
+    @staticmethod
+    def _benchmark_args(
+        benchmark: BenchmarkSpec,
+        config: StandConfig,
+        output_directory: Path,
+    ) -> tuple[str, ...]:
+        host = (
+            "127.0.0.1"
+            if config.primary.bind_address in {"0.0.0.0", "::"}
+            else config.primary.bind_address
         )
+        pg_data_path, _bind_target = postgres_data_paths(config.postgres.version)
+        axis_option = {
+            "pgbench_clients": "--pgbench-clients",
+            "pgbench_time": "--pgbench-time",
+        }[benchmark.iteration_axis]
+        args = [
+            "benchmark",
+            "--connection-type=docker",
+            "--container-name",
+            config.primary.container_name,
+            "--allow-database-reset",
+            "--host",
+            host,
+            "--port",
+            str(config.primary.published_port),
+            "--user",
+            config.postgres.superuser,
+            "--database",
+            benchmark.database,
+            "--pg-data-path",
+            pg_data_path,
+            "--pg-bin-path",
+            f"/usr/lib/postgresql/{config.postgres.version}/bin",
+            "--benchmark-type",
+            benchmark.benchmark_type,
+            axis_option,
+            ",".join(str(value) for value in benchmark.iterations),
+            "--command-timeout",
+            str(benchmark.command_timeout),
+            "--system-metrics-interval",
+            str(benchmark.system_metrics_interval),
+            "--report-name",
+            benchmark.report_name,
+            "--out",
+            str(output_directory),
+            "--log-dir",
+            str(output_directory / "log"),
+        ]
+        if benchmark.pgbench_path is not None:
+            args.extend(("--pgbench-path", benchmark.pgbench_path))
+        if benchmark.psql_path is not None:
+            args.extend(("--psql-path", benchmark.psql_path))
+        if benchmark.system_metrics_duration is not None:
+            args.extend(("--system-metrics-duration", str(benchmark.system_metrics_duration)))
+        if benchmark.workload_path is not None:
+            args.extend(("--workload-path", str(benchmark.workload_path)))
+        if benchmark.workload_profile is not None:
+            args.extend(("--workload-profile", benchmark.workload_profile))
+        args.extend(("--workload-scale", str(benchmark.workload_scale)))
+        if benchmark.workload_duration_seconds is not None:
+            args.extend(
+                (
+                    "--workload-duration-seconds",
+                    str(benchmark.workload_duration_seconds),
+                )
+            )
+        if benchmark.init_command is not None:
+            args.extend(("--init-command", benchmark.init_command))
+        if benchmark.workload_command is not None:
+            args.extend(("--workload-command", benchmark.workload_command))
+        if benchmark.drop_os_caches:
+            args.append("--drop-os-caches")
+        if benchmark.collect_pg_logs:
+            args.append("--collect-pg-logs")
+        return tuple(args)
 
     @staticmethod
     def _pgpass_escape(value: str) -> str:
@@ -780,7 +1212,11 @@ class PgPlayService:
                 values = [host, str(port), "*", user, password]
                 lines.append(":".join(self._pgpass_escape(value) for value in values))
         write_text(passfile, "\n".join(lines) + "\n")
-        return {"workload_password": workload_password, "passfile": str(passfile)}
+        return {
+            "admin_password": stand_credentials.superuser_password,
+            "workload_password": workload_password,
+            "passfile": str(passfile),
+        }
 
     @staticmethod
     def _connection_environment(
@@ -826,9 +1262,9 @@ class PgPlayService:
             "--out",
             str(run_directory),
             "--json-out",
-            str(run_directory / "report.json"),
+            str(run_directory / f"{manifest.diagnostics.report_name}.json"),
             "--html-out",
-            str(run_directory / "report.html"),
+            str(run_directory / f"{manifest.diagnostics.report_name}.html"),
         ]
         if manifest.diagnostics.mode == "snapshots":
             args.extend(

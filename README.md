@@ -12,6 +12,8 @@ experiments.
   hashes.
 - Validates and compares `pg_diag` JSON reports without treating a partial
   collection as a successful complete run.
+- Plans and runs `pg_perf_bench` only against an explicitly selected disposable
+  database, then validates and compares benchmark artifacts and TPS evidence.
 - Installs every component while preserving their independent use.
 
 The independently installable components are:
@@ -24,6 +26,8 @@ The independently installable components are:
   artifacts;
 - [`pg_configurator`](https://github.com/O2eg/pg_configurator) — version-aware
   PostgreSQL configuration candidates.
+- [`pg_perf_bench`](https://github.com/O2eg/pg_perf_bench) — controlled pgbench
+  execution and environment evidence.
 
 ## How it works
 
@@ -39,16 +43,17 @@ The independently installable components are:
           pg_stand ------------------------+
               |
               v
-         PostgreSQL stand
-          /           \
-         v             v
-  pg_workload       pg_diag
-         |             |
-         +------ run --+----> diagnostic report
-                                   |
-                   change config/profile/version
-                                   |
-                                   +----> rebuild, rerun, compare
+                    PostgreSQL stand
+                  /          |          \
+                 v           v           v
+          pg_workload  pg_perf_bench   pg_diag
+                 |           |           |
+                 |     benchmark report  |
+                 +--------- run ----------+----> diagnostic report
+                                  |
+                  change one reviewed input
+                                  |
+                                  +----> rebuild, rerun, compare
 ```
 
 The control layers are deliberately separate:
@@ -57,7 +62,7 @@ The control layers are deliberately separate:
 agent skills          workflow and interpretation rules
       |
       v
-pg-play-mcp           seven typed, high-level operations
+pg-play-mcp           thirteen typed, high-level operations
       |
       v
 pg_play core          validation, planning, state, comparison
@@ -68,7 +73,8 @@ component adapters    argv arrays + strict JSON envelopes
       +---- pg_configurator
       +---- pg_stand
       +---- pg_workload
-      `---- pg_diag
+      +---- pg_diag
+      `---- pg_perf_bench
 ```
 
 MCP does not expose arbitrary shell, SQL, Docker, or raw component-command
@@ -81,7 +87,7 @@ are hidden from its primary help and its normal human output is unchanged.
 python -m pip install pg-play
 ```
 
-This installs compatible versions of all four component distributions. They
+This installs compatible versions of all five component distributions. They
 remain available through their own commands:
 
 ```bash
@@ -89,6 +95,7 @@ pg-stand --help
 pg-workload --help
 pg-diag --help
 pg-configurator --help
+pg-perf-bench --help
 ```
 
 ## Experiment manifest
@@ -121,6 +128,8 @@ spec:
     user: workload_user
     install: true
     stop_after_report: true
+    pgbench_duration_seconds: 30
+    job_interval_seconds: 5
     resource_guard:
       disk_max_used_pct: 90
       mem_min_available_pct: 10
@@ -133,7 +142,47 @@ spec:
     collection_mode: remote-db-only
     duration_seconds: 60
     interval_seconds: 10
+    report_name: pg18-mixed-diagnostics
+  benchmark:                         # optional
+    database: pg_perf_bench_test     # dedicated and disposable
+    report_name: pg18-mixed-benchmark
+    benchmark_type: default
+    clients: [1, 4, 16]              # or times_seconds, never both
+    init_command: >-
+      ARG_PGBENCH_PATH -i -s 10 -h ARG_PG_HOST -p ARG_PG_PORT
+      -U ARG_PG_USER ARG_PG_DATABASE
+    workload_command: >-
+      ARG_PGBENCH_PATH -T 60 -c ARG_PGBENCH_CLIENTS -j ARG_PGBENCH_CLIENTS
+      -h ARG_PG_HOST -p ARG_PG_PORT -U ARG_PG_USER ARG_PG_DATABASE
+    command_timeout: 120
+    system_metrics_interval: 1
+    drop_os_caches: false
+    collect_pg_logs: true
+  phases:
+    benchmark: true
+    workload_diagnostics: true
+    recreate_workload_database: true
 ```
+
+To use a packaged `pg_perf_bench` maximum-TPS profile, replace
+`benchmark_type`, `init_command`, `workload_command`, and `workload_path` with:
+
+```yaml
+    workload_profile: imdb            # imdb or pagila
+    workload_scale: 1.0
+    workload_duration_seconds: 30
+    clients: [1, 2, 4, 8, 16]
+```
+
+The profile supplies its schema, deterministic generator, SQL query set and
+command templates. `pg_play` includes the selected profile and scale in the
+reviewed benchmark plan. `pg_perf_bench` selects the newest local pgbench/psql
+pair automatically; optional `pgbench_path` and `psql_path` overrides are
+accepted only when they are not older than the newest installed clients. The
+pg_diag OS sampler runs during every benchmark window; use
+`system_metrics_interval` to control its cadence and
+`system_metrics_duration` only when a custom command has no pgbench `-T` or
+`--time` option.
 
 Paths are resolved relative to the manifest. `spec.stand.project` defaults to
 the manifest directory and fixes where `pg_stand` stores state, credentials,
@@ -149,6 +198,20 @@ only when the host policy is explicitly known.
 The packaged JSON Schema is available as the MCP resource
 `pgplay://experiment-schema`.
 
+## Shared CLI conventions
+
+`pg_diag` naming is the reference for equivalent options. Components now use
+`--host`, `--port`, `--database`, `--user`, `--password`, `--out`, and
+`--pg-version` wherever those concepts apply. Existing `pg_perf_bench --pg-*`,
+`pg_workload --pg-major`/`--workload-user`, `pg_stand --postgres-version`, and
+`pg_configurator --output-file-name` spellings remain compatibility aliases.
+Secrets are the deliberate exception: `pg_workload` continues to accept
+passwords only through environment/passfile mechanisms.
+
+All five components use the same hidden orchestration options:
+`--machine`, `--request-id`, and `--component-capabilities`. Their advertised
+`machine_interface` object makes these names machine-verifiable.
+
 ## Human CLI
 
 The `pg-play` CLI contains only complete experiment operations:
@@ -162,6 +225,12 @@ The `pg-play` CLI contains only complete experiment operations:
 | `status MANIFEST --run-id ID` | Read durable run state |
 | `inspect-report REPORT.json` | Validate and summarize one diagnostic artifact |
 | `compare-reports BASELINE.json CANDIDATE.json` | Produce deterministic summary deltas |
+| `inspect-benchmark-report REPORT.json` | Validate and summarize one benchmark artifact |
+| `compare-benchmark-reports BASELINE.json CANDIDATE.json` | Check server, environment and methodology identity, then produce TPS deltas |
+| `benchmark-profiles` | List packaged maximum-TPS workload profiles |
+| `benchmark-join-tasks` | List documented benchmark JOIN scenarios |
+| `join-benchmark-reports --report ... --join-task TASK --out DIR --report-name NAME` | Join only the explicitly named benchmark reports |
+| `teardown MANIFEST [--clear-stand-data]` | Stop workload processes and remove the managed stand |
 
 Typical flow:
 
@@ -202,6 +271,12 @@ server exposes only:
 - `experiment_status`
 - `inspect_diagnostic_report`
 - `compare_diagnostic_reports`
+- `inspect_benchmark_report`
+- `compare_benchmark_reports`
+- `benchmark_profiles`
+- `benchmark_join_tasks`
+- `join_benchmark_reports`
+- `teardown_experiment`
 
 An agent should validate, plan, show the mutation to the user, and then call
 `run_experiment` with the unchanged hash and a new run id. The implementation
@@ -224,7 +299,8 @@ agent product.
 ## Determinism and safety
 
 - Every component returns the exact `pg_play/component/v1` envelope in hidden
-  machine mode.
+  machine mode and advertises `pg_play/capabilities/v1` through the common
+  `--component-capabilities` flag.
 - Plans hash normalized configuration, workload profile contents, scheduler
   state, and current stand state.
 - Parameters owned by stand topology, TLS, fixed CSV logging, or diagnostic
@@ -234,7 +310,8 @@ agent product.
   component contract does not yet provision a client certificate for the
   dedicated workload role. Direct TLS use of each component remains available.
 - `pg_stand apply` verifies its component plan hash; `pg_play run` verifies the
-  combined plan hash.
+  combined plan hash. Machine-mode `pg_perf_bench benchmark` independently
+  verifies a content-sensitive benchmark plan hash before resetting its database.
 - Subprocesses receive argument arrays with `shell=False`.
 - Password-bearing CLI arguments and password-bearing machine output are
   rejected.
@@ -252,8 +329,9 @@ run evidence.
 ## Current scope
 
 The first contract covers one configuration candidate, one managed stand,
-selected workload profiles, a one-shot or snapshots report, and deterministic
-report-summary comparison. Automatic extraction of OS facts and generation or
+an optional controlled benchmark, selected workload profiles, a one-shot or
+snapshots report, and deterministic diagnostic and benchmark comparison.
+Automatic extraction of OS facts and generation or
 application of TuneD/systemd artifacts remains a roadmap item; it is not
 silently approximated by the current implementation.
 
@@ -261,9 +339,17 @@ silently approximated by the current implementation.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ../pg_stand -e ../pg_workload -e ../pg_diag -e ../pg_configurator
+.venv/bin/pip install -e ../pg_stand -e ../pg_workload -e ../pg_diag \
+  -e ../pg_configurator -e ../pg_perf_bench
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 .venv/bin/pytest
 ```
+
+For coordinated releases, publish the component distributions before tagging
+`pg_play`: first `pg_configurator`, `pg_diag`, `pg_stand`, and `pg_workload`,
+then `pg_perf_bench` (which depends on `pg_diag`), and finally `pg_play`.
+Ordinary branch CI checks out the component sources so a coordinated source
+change can be tested before those versions reach PyPI. Tagged publish jobs use
+the package index deliberately and therefore enforce this release order.

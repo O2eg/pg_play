@@ -16,6 +16,7 @@ from pg_play.contract import ContractError, validate_envelope
 EXECUTABLES = {
     "pg_configurator": "pg-configurator",
     "pg_diag": "pg-diag",
+    "pg_perf_bench": "pg-perf-bench",
     "pg_stand": "pg-stand",
     "pg_workload": "pg-workload",
 }

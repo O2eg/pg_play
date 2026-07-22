@@ -53,6 +53,8 @@
             "user": {"type": "string", "minLength": 1},
             "install": {"type": "boolean"},
             "stop_after_report": {"type": "boolean"},
+            "pgbench_duration_seconds": {"type": "integer", "minimum": 1},
+            "job_interval_seconds": {"type": "integer", "minimum": 1},
             "resource_guard": {
               "type": "object",
               "additionalProperties": false,
@@ -74,7 +76,8 @@
             "mode": {"enum": ["one-shot", "snapshots"]},
             "collection_mode": {"enum": ["remote-db-only", "local", "remote"]},
             "duration_seconds": {"type": "number", "minimum": 30, "maximum": 86400},
-            "interval_seconds": {"type": "number", "minimum": 5, "maximum": 600}
+            "interval_seconds": {"type": "number", "minimum": 5, "maximum": 600},
+            "report_name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"}
           },
           "allOf": [
             {
@@ -89,6 +92,81 @@
               }
             }
           ]
+        },
+        "benchmark": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "database": {"type": "string", "minLength": 1},
+            "report_name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+            "benchmark_type": {"enum": ["default", "custom"]},
+            "workload_profile": {"enum": ["imdb", "pagila"]},
+            "workload_scale": {"type": "number", "exclusiveMinimum": 0},
+            "workload_duration_seconds": {"type": "integer", "minimum": 1},
+            "clients": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "times_seconds": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "init_command": {"type": "string", "minLength": 1},
+            "workload_command": {"type": "string", "minLength": 1},
+            "workload_path": {"type": "string", "minLength": 1},
+            "pgbench_path": {"type": "string", "minLength": 1},
+            "psql_path": {"type": "string", "minLength": 1},
+            "command_timeout": {"type": "number", "exclusiveMinimum": 0},
+            "system_metrics_interval": {"type": "number", "exclusiveMinimum": 0},
+            "system_metrics_duration": {"type": "number", "exclusiveMinimum": 0},
+            "drop_os_caches": {"type": "boolean"},
+            "collect_pg_logs": {"type": "boolean"}
+          },
+          "oneOf": [
+            {"required": ["clients"], "not": {"required": ["times_seconds"]}},
+            {"required": ["times_seconds"], "not": {"required": ["clients"]}}
+          ],
+          "allOf": [
+            {
+              "if": {
+                "required": ["workload_profile"]
+              },
+              "then": {
+                "properties": {"benchmark_type": {"const": "custom"}},
+                "required": ["clients"],
+                "not": {
+                  "anyOf": [
+                    {"required": ["times_seconds"]},
+                    {"required": ["workload_path"]}
+                  ]
+                }
+              },
+              "else": {"required": ["init_command", "workload_command"]}
+            },
+            {
+              "if": {
+                "allOf": [
+                  {
+                    "properties": {"benchmark_type": {"const": "custom"}},
+                    "required": ["benchmark_type"]
+                  },
+                  {"not": {"required": ["workload_profile"]}}
+                ]
+              },
+              "then": {"required": ["workload_path"]}
+            }
+          ]
+        },
+        "phases": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "benchmark": {"type": "boolean"},
+            "workload_diagnostics": {"type": "boolean"},
+            "recreate_workload_database": {"type": "boolean"}
+          }
         }
       }
     }

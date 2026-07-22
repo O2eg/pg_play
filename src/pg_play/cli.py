@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities = commands.add_parser("capabilities", help="Show installed component capabilities")
     capabilities.add_argument(
         "--component",
-        choices=("pg_configurator", "pg_stand", "pg_workload", "pg_diag"),
+        choices=("pg_configurator", "pg_stand", "pg_workload", "pg_diag", "pg_perf_bench"),
     )
 
     validate = commands.add_parser("validate", help="Validate an experiment manifest and inputs")
@@ -45,6 +45,36 @@ def build_parser() -> argparse.ArgumentParser:
     compare = commands.add_parser("compare-reports", help="Compare two pg_diag JSON artifacts")
     compare.add_argument("baseline")
     compare.add_argument("candidate")
+
+    inspect_benchmark = commands.add_parser(
+        "inspect-benchmark-report",
+        help="Validate and summarize pg_perf_bench JSON",
+    )
+    inspect_benchmark.add_argument("report")
+
+    compare_benchmarks = commands.add_parser(
+        "compare-benchmark-reports",
+        help="Compare two pg_perf_bench JSON artifacts",
+    )
+    compare_benchmarks.add_argument("baseline")
+    compare_benchmarks.add_argument("candidate")
+    commands.add_parser("benchmark-profiles", help="List pg_perf_bench workload profiles")
+    commands.add_parser("benchmark-join-tasks", help="List pg_perf_bench JOIN scenarios")
+    join_benchmarks = commands.add_parser(
+        "join-benchmark-reports",
+        help="Join an explicit set of pg_perf_bench JSON reports",
+    )
+    join_benchmarks.add_argument("--report", action="append", required=True)
+    join_benchmarks.add_argument("--join-task", required=True)
+    join_benchmarks.add_argument("--out", required=True)
+    join_benchmarks.add_argument("--report-name", required=True)
+
+    teardown = commands.add_parser(
+        "teardown",
+        help="Stop workload processes and remove an experiment stand",
+    )
+    teardown.add_argument("manifest")
+    teardown.add_argument("--clear-stand-data", action="store_true")
     return parser
 
 
@@ -74,6 +104,26 @@ def main(argv: list[str] | None = None) -> int:
             result = service.inspect_report(args.report)
         elif args.command == "compare-reports":
             result = service.compare_reports(args.baseline, args.candidate)
+        elif args.command == "inspect-benchmark-report":
+            result = service.inspect_benchmark_report(args.report)
+        elif args.command == "compare-benchmark-reports":
+            result = service.compare_benchmark_reports(args.baseline, args.candidate)
+        elif args.command == "benchmark-profiles":
+            result = service.benchmark_profiles()
+        elif args.command == "benchmark-join-tasks":
+            result = service.benchmark_join_tasks()
+        elif args.command == "join-benchmark-reports":
+            result = service.join_benchmark_reports(
+                args.report,
+                args.join_task,
+                args.out,
+                args.report_name,
+            )
+        elif args.command == "teardown":
+            result = service.teardown_experiment(
+                args.manifest,
+                clear_stand_data=args.clear_stand_data,
+            )
         else:  # pragma: no cover
             raise AssertionError(f"unhandled command: {args.command}")
     except (OSError, RuntimeError, ValueError) as exc:

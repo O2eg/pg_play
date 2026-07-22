@@ -82,3 +82,87 @@ def compare_reports(baseline: str | Path, candidate: str | Path) -> dict[str, An
             },
         },
     }
+
+
+def compare_benchmark_summaries(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    comparability_fields = {
+        "artifact_schema_version": (
+            baseline.get("artifact_schema_version"),
+            candidate.get("artifact_schema_version"),
+        ),
+        "iteration_parameters": (
+            baseline.get("iteration_parameters"),
+            candidate.get("iteration_parameters"),
+        ),
+        "iteration_values": (
+            baseline.get("iteration_values"),
+            candidate.get("iteration_values"),
+        ),
+        "benchmark_methodology": (
+            baseline.get("benchmark_methodology"),
+            candidate.get("benchmark_methodology"),
+        ),
+        "server_version_num": (
+            ((baseline.get("postgresql_compatibility") or {}).get("server") or {}).get(
+                "version_num"
+            ),
+            ((candidate.get("postgresql_compatibility") or {}).get("server") or {}).get(
+                "version_num"
+            ),
+        ),
+        "environment_identity_hash": (
+            (baseline.get("environment_evidence") or {}).get("identity_hash"),
+            (candidate.get("environment_evidence") or {}).get("identity_hash"),
+        ),
+    }
+    mismatches = {
+        name: {"baseline": values[0], "candidate": values[1]}
+        for name, values in comparability_fields.items()
+        if values[0] != values[1]
+    }
+    baseline_tps = [
+        float(value)
+        for value in baseline.get("tps_values", [])
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    candidate_tps = [
+        float(value)
+        for value in candidate.get("tps_values", [])
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    baseline_mean = sum(baseline_tps) / len(baseline_tps) if baseline_tps else None
+    candidate_mean = sum(candidate_tps) / len(candidate_tps) if candidate_tps else None
+    mean_delta = (
+        candidate_mean - baseline_mean
+        if baseline_mean is not None and candidate_mean is not None
+        else None
+    )
+    mean_delta_pct = (
+        mean_delta / baseline_mean * 100
+        if mean_delta is not None and baseline_mean not in {None, 0}
+        else None
+    )
+    return {
+        "schema_version": "pg_play/benchmark-comparison-v1",
+        "comparability": {
+            "comparable": not mismatches,
+            "mismatches": mismatches,
+        },
+        "delta": {
+            "item_count": candidate["item_count"] - baseline["item_count"],
+            "benchmark_run_count": (
+                candidate["benchmark_run_count"] - baseline["benchmark_run_count"]
+            ),
+            "mean_tps": round(mean_delta, 6) if mean_delta is not None else None,
+            "mean_tps_percent": (round(mean_delta_pct, 6) if mean_delta_pct is not None else None),
+            "tps_values": [
+                round(right - left, 6)
+                for left, right in zip(baseline_tps, candidate_tps, strict=False)
+            ],
+            "database_configuration_changed": baseline.get("database_configuration_evidence")
+            != candidate.get("database_configuration_evidence"),
+        },
+    }

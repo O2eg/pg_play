@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,8 @@ class WorkloadSpec:
     user: str
     install: bool
     stop_after_report: bool
+    pgbench_duration_seconds: int | None
+    job_interval_seconds: int | None
     resource_guard: ResourceGuardSpec
 
 
@@ -50,6 +53,36 @@ class DiagnosticSpec:
     collection_mode: str
     duration_seconds: float
     interval_seconds: float
+    report_name: str
+
+
+@dataclass(frozen=True)
+class BenchmarkSpec:
+    database: str
+    report_name: str
+    benchmark_type: str
+    workload_profile: str | None
+    workload_scale: float
+    workload_duration_seconds: int | None
+    iteration_axis: str
+    iterations: tuple[int, ...]
+    init_command: str | None
+    workload_command: str | None
+    workload_path: Path | None
+    pgbench_path: str | None
+    psql_path: str | None
+    command_timeout: float
+    system_metrics_interval: float
+    system_metrics_duration: float | None
+    drop_os_caches: bool
+    collect_pg_logs: bool
+
+
+@dataclass(frozen=True)
+class PhaseSpec:
+    benchmark: bool
+    workload_diagnostics: bool
+    recreate_workload_database: bool
 
 
 @dataclass(frozen=True)
@@ -62,6 +95,8 @@ class ExperimentManifest:
     configurator_inputs: dict[str, Any]
     workload: WorkloadSpec
     diagnostics: DiagnosticSpec
+    benchmark: BenchmarkSpec | None
+    phases: PhaseSpec
     document_hash: str
 
 
@@ -93,7 +128,7 @@ def _positive_float(value: Any, label: str) -> float:
         result = float(value)
     except (TypeError, ValueError) as exc:
         raise ManifestError(f"{label} must be a positive number") from exc
-    if result <= 0:
+    if not math.isfinite(result) or result <= 0:
         raise ManifestError(f"{label} must be a positive number")
     return result
 
@@ -132,7 +167,15 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
     spec = _mapping(
         root.get("spec"),
         "spec",
-        {"artifact_root", "stand", "configurator", "workload", "diagnostics"},
+        {
+            "artifact_root",
+            "stand",
+            "configurator",
+            "workload",
+            "diagnostics",
+            "benchmark",
+            "phases",
+        },
     )
     base = source.parent
     artifact_root = _path(
@@ -172,6 +215,8 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
             "user",
             "install",
             "stop_after_report",
+            "pgbench_duration_seconds",
+            "job_interval_seconds",
             "resource_guard",
         },
     )
@@ -247,12 +292,30 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
             workload_raw.get("stop_after_report", True),
             "spec.workload.stop_after_report",
         ),
+        pgbench_duration_seconds=(
+            _integer(
+                workload_raw["pgbench_duration_seconds"],
+                "spec.workload.pgbench_duration_seconds",
+                minimum=1,
+            )
+            if workload_raw.get("pgbench_duration_seconds") is not None
+            else None
+        ),
+        job_interval_seconds=(
+            _integer(
+                workload_raw["job_interval_seconds"],
+                "spec.workload.job_interval_seconds",
+                minimum=1,
+            )
+            if workload_raw.get("job_interval_seconds") is not None
+            else None
+        ),
         resource_guard=resource_guard,
     )
     diagnostics_raw = _mapping(
         spec.get("diagnostics", {}),
         "spec.diagnostics",
-        {"mode", "collection_mode", "duration_seconds", "interval_seconds"},
+        {"mode", "collection_mode", "duration_seconds", "interval_seconds", "report_name"},
     )
     mode = _text(diagnostics_raw.get("mode", "snapshots"), "spec.diagnostics.mode")
     if mode not in {"one-shot", "snapshots"}:
@@ -281,6 +344,10 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
             diagnostics_raw.get("interval_seconds", 15),
             "spec.diagnostics.interval_seconds",
         ),
+        report_name=_text(
+            diagnostics_raw.get("report_name", "report"),
+            "spec.diagnostics.report_name",
+        ),
     )
     if diagnostics.mode == "snapshots":
         window_error = validate_snapshots_window(
@@ -289,6 +356,185 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
         )
         if window_error is not None:
             raise ManifestError(window_error)
+    if not _PROFILE_RE.fullmatch(diagnostics.report_name):
+        raise ManifestError(f"spec.diagnostics.report_name must match {_PROFILE_RE.pattern}")
+
+    benchmark: BenchmarkSpec | None = None
+    if spec.get("benchmark") is not None:
+        benchmark_raw = _mapping(
+            spec["benchmark"],
+            "spec.benchmark",
+            {
+                "database",
+                "report_name",
+                "benchmark_type",
+                "clients",
+                "times_seconds",
+                "init_command",
+                "workload_command",
+                "workload_path",
+                "workload_profile",
+                "workload_scale",
+                "workload_duration_seconds",
+                "pgbench_path",
+                "psql_path",
+                "command_timeout",
+                "system_metrics_interval",
+                "system_metrics_duration",
+                "drop_os_caches",
+                "collect_pg_logs",
+            },
+        )
+        clients = benchmark_raw.get("clients")
+        times = benchmark_raw.get("times_seconds")
+        if bool(clients) == bool(times):
+            raise ManifestError("spec.benchmark requires exactly one of clients or times_seconds")
+        raw_iterations = clients or times
+        if not isinstance(raw_iterations, list) or not raw_iterations:
+            raise ManifestError("spec.benchmark iteration axis must be a non-empty list")
+        iterations = tuple(
+            _integer(value, "spec.benchmark iteration", minimum=1) for value in raw_iterations
+        )
+        workload_profile = (
+            _text(benchmark_raw.get("workload_profile"), "spec.benchmark.workload_profile")
+            if benchmark_raw.get("workload_profile") is not None
+            else None
+        )
+        if workload_profile not in {None, "imdb", "pagila"}:
+            raise ManifestError("spec.benchmark.workload_profile must be imdb or pagila")
+        if workload_profile is not None and times:
+            raise ManifestError("bundled benchmark profiles require spec.benchmark.clients")
+        benchmark_type = _text(
+            benchmark_raw.get(
+                "benchmark_type", "custom" if workload_profile is not None else "default"
+            ),
+            "spec.benchmark.benchmark_type",
+        )
+        if benchmark_type not in {"default", "custom"}:
+            raise ManifestError("spec.benchmark.benchmark_type must be default or custom")
+        if workload_profile is not None and benchmark_type != "custom":
+            raise ManifestError("bundled benchmark profiles use benchmark_type custom")
+        workload_path = (
+            _path(base, benchmark_raw["workload_path"], "spec.benchmark.workload_path")
+            if benchmark_raw.get("workload_path") is not None
+            else None
+        )
+        if workload_profile is not None and workload_path is not None:
+            raise ManifestError(
+                "spec.benchmark.workload_path cannot be combined with workload_profile"
+            )
+        if benchmark_type == "custom" and workload_path is None and workload_profile is None:
+            raise ManifestError(
+                "spec.benchmark.workload_path is required for benchmark_type custom"
+            )
+        if workload_path is not None and not workload_path.exists():
+            raise ManifestError(f"benchmark workload path does not exist: {workload_path}")
+        benchmark = BenchmarkSpec(
+            database=_text(
+                benchmark_raw.get("database", "pg_perf_bench_test"),
+                "spec.benchmark.database",
+            ),
+            report_name=_text(
+                benchmark_raw.get("report_name", "benchmark"),
+                "spec.benchmark.report_name",
+            ),
+            benchmark_type=benchmark_type,
+            workload_profile=workload_profile,
+            workload_scale=_positive_float(
+                benchmark_raw.get("workload_scale", 1.0),
+                "spec.benchmark.workload_scale",
+            ),
+            workload_duration_seconds=(
+                _integer(
+                    benchmark_raw["workload_duration_seconds"],
+                    "spec.benchmark.workload_duration_seconds",
+                    minimum=1,
+                )
+                if benchmark_raw.get("workload_duration_seconds") is not None
+                else None
+            ),
+            iteration_axis="pgbench_clients" if clients else "pgbench_time",
+            iterations=iterations,
+            init_command=(
+                _text(benchmark_raw.get("init_command"), "spec.benchmark.init_command")
+                if benchmark_raw.get("init_command") is not None
+                else None
+            ),
+            workload_command=(
+                _text(benchmark_raw.get("workload_command"), "spec.benchmark.workload_command")
+                if benchmark_raw.get("workload_command") is not None
+                else None
+            ),
+            workload_path=workload_path,
+            pgbench_path=(
+                _text(benchmark_raw["pgbench_path"], "spec.benchmark.pgbench_path")
+                if benchmark_raw.get("pgbench_path") is not None
+                else None
+            ),
+            psql_path=(
+                _text(benchmark_raw["psql_path"], "spec.benchmark.psql_path")
+                if benchmark_raw.get("psql_path") is not None
+                else None
+            ),
+            command_timeout=_positive_float(
+                benchmark_raw.get("command_timeout", 300),
+                "spec.benchmark.command_timeout",
+            ),
+            system_metrics_interval=_positive_float(
+                benchmark_raw.get("system_metrics_interval", 1),
+                "spec.benchmark.system_metrics_interval",
+            ),
+            system_metrics_duration=(
+                _positive_float(
+                    benchmark_raw["system_metrics_duration"],
+                    "spec.benchmark.system_metrics_duration",
+                )
+                if benchmark_raw.get("system_metrics_duration") is not None
+                else None
+            ),
+            drop_os_caches=_boolean(
+                benchmark_raw.get("drop_os_caches", False),
+                "spec.benchmark.drop_os_caches",
+            ),
+            collect_pg_logs=_boolean(
+                benchmark_raw.get("collect_pg_logs", False),
+                "spec.benchmark.collect_pg_logs",
+            ),
+        )
+        if not _PROFILE_RE.fullmatch(benchmark.report_name):
+            raise ManifestError(f"spec.benchmark.report_name must match {_PROFILE_RE.pattern}")
+        if workload_profile is None and (
+            benchmark.init_command is None or benchmark.workload_command is None
+        ):
+            raise ManifestError(
+                "spec.benchmark requires init_command and workload_command without workload_profile"
+            )
+    phases_raw = _mapping(
+        spec.get("phases", {}),
+        "spec.phases",
+        {"benchmark", "workload_diagnostics", "recreate_workload_database"},
+    )
+    phases = PhaseSpec(
+        benchmark=_boolean(
+            phases_raw.get("benchmark", benchmark is not None),
+            "spec.phases.benchmark",
+        ),
+        workload_diagnostics=_boolean(
+            phases_raw.get("workload_diagnostics", True),
+            "spec.phases.workload_diagnostics",
+        ),
+        recreate_workload_database=_boolean(
+            phases_raw.get("recreate_workload_database", False),
+            "spec.phases.recreate_workload_database",
+        ),
+    )
+    if phases.benchmark and benchmark is None:
+        raise ManifestError("spec.phases.benchmark requires spec.benchmark")
+    if not phases.benchmark and not phases.workload_diagnostics:
+        raise ManifestError("spec.phases must enable benchmark or workload_diagnostics")
+    if phases.recreate_workload_database and not phases.workload_diagnostics:
+        raise ManifestError("spec.phases.recreate_workload_database requires workload_diagnostics")
+
     return ExperimentManifest(
         source=source,
         experiment_id=experiment_id,
@@ -298,5 +544,7 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
         configurator_inputs=dict(inputs),
         workload=workload,
         diagnostics=diagnostics,
+        benchmark=benchmark,
+        phases=phases,
         document_hash=canonical_hash(document),
     )
