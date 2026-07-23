@@ -9,8 +9,16 @@ def test_schema_and_agent_skills_are_packaged() -> None:
     package = files("pg_play")
 
     assert package.joinpath("schema/pg_play-v1.schema.json").is_file()
+    assert package.joinpath("schema/run-state-v2.schema.json").is_file()
+    assert package.joinpath("schema/run-event-v1.schema.json").is_file()
     assert package.joinpath("skills/run-postgres-experiment/SKILL.md").is_file()
+    assert package.joinpath("skills/recover-postgres-experiment/SKILL.md").is_file()
+    assert package.joinpath("skills/diagnose-live-postgres/SKILL.md").is_file()
+    assert package.joinpath("skills/review-postgres-configuration/SKILL.md").is_file()
     assert package.joinpath("skills/analyze-postgres-experiment/SKILL.md").is_file()
+    assert package.joinpath(
+        "skills/analyze-postgres-experiment/references/benchmark-joins.md"
+    ).is_file()
 
 
 def test_distribution_metadata_requires_every_orchestrated_component() -> None:
@@ -29,7 +37,7 @@ def test_distribution_metadata_requires_every_orchestrated_component() -> None:
     } <= package_names
     minimum_versions = {
         "pg-configurator": ">=0.9.1",
-        "pg-diag": ">=0.10.3",
+        "pg-diag": ">=0.10.4",
         "pg-perf-bench": ">=0.2",
         "pg-stand": ">=0.2.1",
         "pg-workload": ">=0.3.0",

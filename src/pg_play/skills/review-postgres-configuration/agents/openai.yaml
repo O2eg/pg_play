@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review PostgreSQL Configuration"
+  short_description: "Review a live PostgreSQL configuration"
+  default_prompt: "Use $review-postgres-configuration to inspect a PostgreSQL server and recommend configuration changes."

@@ -35,9 +35,33 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--plan-hash", required=True)
     run.add_argument("--run-id", required=True)
 
-    status = commands.add_parser("status", help="Read one immutable experiment run state")
+    start = commands.add_parser("start", help="Start a durable experiment worker and return")
+    start.add_argument("manifest")
+    start.add_argument("--plan-hash", required=True)
+    start.add_argument("--run-id", required=True)
+
+    resume = commands.add_parser(
+        "resume",
+        help="Resume a verified failed, cancelled, or interrupted experiment",
+    )
+    resume.add_argument("manifest")
+    resume.add_argument("--plan-hash", required=True)
+    resume.add_argument("--run-id", required=True)
+
+    status = commands.add_parser("status", help="Read and reconcile durable experiment state")
     status.add_argument("manifest")
     status.add_argument("--run-id", required=True)
+
+    events = commands.add_parser("events", help="Read ordered durable experiment events")
+    events.add_argument("manifest")
+    events.add_argument("--run-id", required=True)
+    events.add_argument("--after-sequence", type=int, default=0)
+    events.add_argument("--limit", type=int, default=1000)
+
+    cancel = commands.add_parser("cancel", help="Request cooperative experiment cancellation")
+    cancel.add_argument("manifest")
+    cancel.add_argument("--run-id", required=True)
+    cancel.add_argument("--reason")
 
     inspect = commands.add_parser("inspect-report", help="Validate and summarize pg_diag JSON")
     inspect.add_argument("report")
@@ -98,8 +122,33 @@ def main(argv: list[str] | None = None) -> int:
                 plan_hash=args.plan_hash,
                 run_id=args.run_id,
             )
+        elif args.command == "start":
+            result = service.start_experiment(
+                args.manifest,
+                plan_hash=args.plan_hash,
+                run_id=args.run_id,
+            )
+        elif args.command == "resume":
+            result = service.resume_experiment(
+                args.manifest,
+                plan_hash=args.plan_hash,
+                run_id=args.run_id,
+            )
         elif args.command == "status":
             result = service.experiment_status(args.manifest, args.run_id)
+        elif args.command == "events":
+            result = service.experiment_events(
+                args.manifest,
+                args.run_id,
+                after_sequence=args.after_sequence,
+                limit=args.limit,
+            )
+        elif args.command == "cancel":
+            result = service.cancel_experiment(
+                args.manifest,
+                args.run_id,
+                reason=args.reason,
+            )
         elif args.command == "inspect-report":
             result = service.inspect_report(args.report)
         elif args.command == "compare-reports":

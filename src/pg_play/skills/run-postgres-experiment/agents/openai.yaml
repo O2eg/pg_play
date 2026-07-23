@@ -1,4 +1,4 @@
 interface:
   display_name: "Run PostgreSQL Experiment"
-  short_description: "Orchestrate a reproducible PostgreSQL experiment"
-  default_prompt: "Use $run-postgres-experiment to plan and run a reproducible PostgreSQL experiment."
+  short_description: "Run and monitor reproducible pg_play experiments"
+  default_prompt: "Use $run-postgres-experiment to plan, start, and monitor a new reproducible PostgreSQL experiment."

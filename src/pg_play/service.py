@@ -2,27 +2,76 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import secrets
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
+import yaml
 from docker.utils import parse_bytes
+from pg_diag.configuration_facts import CONFIGURATION_ITEM_IDS
+from pg_diag.errors import ValidationError as PgDiagValidationError
 from pg_stand.config import MANAGED_POSTGRES_PARAMETERS, StandConfig, load_config
 from pg_stand.credentials import credential_paths
 from pg_stand.database_credentials import read_database_credentials
 from pg_stand.runtime_common import postgres_data_paths
 
+from pg_play.configuration_review import (
+    ConfigurationReviewError,
+    build_configurator_inputs,
+    compare_configuration,
+    normalize_review_target,
+    validate_configuration_candidate,
+    write_comparison_artifacts,
+)
+from pg_play.configuration_review import (
+    plan_configuration_review as build_configuration_review_plan,
+)
 from pg_play.contract import canonical_hash, validate_capabilities
+from pg_play.live_diagnostics import LiveDiagnosticsError, LiveDiagnosticsManager
+from pg_play.live_diagnostics import plan_live_diagnostics as build_live_diagnostics_plan
 from pg_play.manifest import BenchmarkSpec, ExperimentManifest, load_manifest
 from pg_play.report import compare_benchmark_summaries, compare_reports, inspect_report
-from pg_play.runner import ComponentInvocation, ComponentRunner
-from pg_play.state import read_state, write_json, write_state, write_text
+from pg_play.runner import (
+    ComponentCancelledError,
+    ComponentInvocation,
+    ComponentRunner,
+    process_start_ticks,
+    recorded_process_is_alive,
+    terminate_recorded_process,
+)
+from pg_play.state import (
+    RESUMABLE_STATES,
+    RUN_STATE_SCHEMA_VERSION,
+    TERMINAL_STATES,
+    append_event,
+    exclusive_lock,
+    read_events,
+    read_state,
+    utc_now,
+    write_json,
+    write_state,
+    write_text,
+)
 
 _RUN_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
+_ACTIVE_STATES = {"queued", "running", "cancelling"}
+_RESUMABLE_STEP_POLICIES = {
+    "stand": "reconcile",
+    "benchmark": "idempotent_database_reset",
+    "prepare-db": "idempotent_database_prepare",
+    "install-workload": "idempotent_profile_install",
+    "start-workload": "desired_state",
+    "diagnostics": "read_only",
+    "stop-workload": "desired_state",
+}
+_REQUIRED_STEP_ARTIFACTS = {"benchmark", "diagnostics"}
 _REQUIRED_COMPONENT_COMMANDS = {
     "pg_configurator": {"capabilities", "generate", "validate-input"},
     "pg_stand": {"apply", "capabilities", "down", "plan", "status", "up", "validate"},
@@ -37,11 +86,13 @@ _REQUIRED_COMPONENT_COMMANDS = {
     },
     "pg_diag": {
         "capabilities",
+        "configuration-facts",
         "explain-plan",
         "one-shot",
         "snapshots",
         "summarize",
         "validate",
+        "validate-artifact",
     },
     "pg_perf_bench": {
         "benchmark",
@@ -61,9 +112,20 @@ class OrchestrationError(RuntimeError):
     """An experiment cannot safely advance to the requested state."""
 
 
+@dataclass(frozen=True)
+class _ExecutionContext:
+    run_id: str
+    run_directory: Path
+    state_path: Path
+    events_path: Path
+    cancel_path: Path
+    active_process_path: Path
+
+
 class PgPlayService:
     def __init__(self, runner: ComponentRunner | None = None) -> None:
         self.runner = runner or ComponentRunner()
+        self._execution_context: _ExecutionContext | None = None
 
     def component_capabilities(self, component: str | None = None) -> dict[str, Any]:
         components = (
@@ -94,6 +156,239 @@ class PgPlayService:
                 required_commands=_REQUIRED_COMPONENT_COMMANDS[name],
             )
         return result
+
+    @staticmethod
+    def plan_live_diagnostics(
+        target: dict[str, Any],
+        intent: str = "performance",
+        duration_seconds: float = 60,
+        interval_seconds: float = 5,
+    ) -> dict[str, Any]:
+        return build_live_diagnostics_plan(
+            target,
+            intent,
+            duration_seconds,
+            interval_seconds,
+        )
+
+    def start_live_diagnostics(
+        self,
+        plan: dict[str, Any],
+        plan_hash: str,
+        output_directory: str | Path,
+        capture_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return LiveDiagnosticsManager(self.runner).start(
+                plan,
+                plan_hash,
+                output_directory,
+                capture_id,
+            )
+        except LiveDiagnosticsError as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def live_diagnostics_status(self, capture_directory: str | Path) -> dict[str, Any]:
+        try:
+            return LiveDiagnosticsManager(self.runner).status(capture_directory)
+        except LiveDiagnosticsError as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def live_diagnostics_events(
+        self,
+        capture_directory: str | Path,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        try:
+            return LiveDiagnosticsManager(self.runner).events(
+                capture_directory,
+                after_sequence=after_sequence,
+                limit=limit,
+            )
+        except (LiveDiagnosticsError, ValueError) as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def cancel_live_diagnostics(
+        self,
+        capture_directory: str | Path,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return LiveDiagnosticsManager(self.runner).cancel(
+                capture_directory,
+                reason=reason,
+            )
+        except LiveDiagnosticsError as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    @staticmethod
+    def plan_configuration_review(
+        target: dict[str, Any],
+        tuning_inputs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return build_configuration_review_plan(target, tuning_inputs)
+
+    def collect_configuration_facts(
+        self,
+        target: dict[str, Any],
+        output_directory: str | Path,
+        review_id: str,
+    ) -> dict[str, Any]:
+        if not _RUN_ID_RE.fullmatch(review_id):
+            raise OrchestrationError("review_id contains unsupported characters")
+        try:
+            normalized, missing, errors = normalize_review_target(target)
+        except (ConfigurationReviewError, PgDiagValidationError) as exc:
+            raise OrchestrationError(str(exc)) from exc
+        if missing or errors:
+            details = [*(f"missing {field}" for field in missing), *errors]
+            raise OrchestrationError("invalid review target: " + "; ".join(details))
+
+        directory = Path(output_directory).expanduser().resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        report_path = directory / f"{review_id}-diagnostic.json"
+        facts_path = directory / f"{review_id}-configuration-facts.json"
+        database = normalized["database"]
+        ssh = normalized["ssh"]
+        arguments = [
+            "one-shot",
+            "--host",
+            database["host"],
+            "--port",
+            str(database["port"]),
+            "--database",
+            database["database"],
+            "--user",
+            database["user"],
+            "--collection-mode",
+            "remote",
+            "--ssh-host",
+            ssh["host"],
+            "--ssh-port",
+            str(ssh["port"]),
+            "--ssh-user",
+            ssh["user"],
+            "--ssh-key",
+            ssh["key_path"],
+            "--ssh-known-hosts",
+            ssh["known_hosts_path"],
+            "--item-id=[" + ",".join(CONFIGURATION_ITEM_IDS) + "]",
+            "--out",
+            str(directory),
+            "--json-out",
+            str(report_path),
+            "--output-format=json",
+        ]
+        if database.get("passfile"):
+            arguments.extend(("--passfile", database["passfile"]))
+        if ssh.get("connect_timeout") is not None:
+            arguments.extend(("--ssh-connect-timeout", str(ssh["connect_timeout"])))
+        if ssh.get("key_passphrase_env"):
+            arguments.extend(("--ssh-key-passphrase-env", ssh["key_passphrase_env"]))
+        environment = None
+        if ssh.get("key_passphrase_env"):
+            environment_name = ssh["key_passphrase_env"]
+            environment = {environment_name: os.environ[environment_name]}
+
+        collection = self._require(
+            self._invoke(
+                "pg_diag",
+                tuple(arguments),
+                request_id=f"configuration-review-{review_id}-collect",
+                environment=environment,
+                timeout_seconds=120,
+                cancellable=False,
+            ),
+            {"succeeded", "partial"},
+        )
+        facts_envelope = self._require(
+            self._invoke(
+                "pg_diag",
+                ("configuration-facts", str(report_path), "--out", str(facts_path)),
+                request_id=f"configuration-review-{review_id}-facts",
+                timeout_seconds=30,
+                cancellable=False,
+            ),
+            {"succeeded"},
+        )
+        return {
+            "schema_version": "pg_play/configuration-facts-collection-v1",
+            "review_id": review_id,
+            "status": collection["status"],
+            "report_path": str(report_path),
+            "facts_path": str(facts_path),
+            "facts": facts_envelope["result"],
+            "artifacts": [
+                *(collection.get("artifacts") or []),
+                *(facts_envelope.get("artifacts") or []),
+            ],
+        }
+
+    def generate_configuration_candidate(
+        self,
+        facts_path: str | Path,
+        tuning_inputs: dict[str, Any],
+        output_directory: str | Path,
+        review_id: str,
+    ) -> dict[str, Any]:
+        if not _RUN_ID_RE.fullmatch(review_id):
+            raise OrchestrationError("review_id contains unsupported characters")
+        try:
+            inputs, context = build_configurator_inputs(facts_path, tuning_inputs)
+        except (ConfigurationReviewError, PgDiagValidationError) as exc:
+            raise OrchestrationError(str(exc)) from exc
+        envelope = self._require(
+            self._invoke(
+                "pg_configurator",
+                ("--input-json=-", "--output-format=json"),
+                request_id=f"configuration-review-{review_id}-candidate",
+                input_document={"schema_version": "pg_configurator/input-v1", "inputs": inputs},
+                timeout_seconds=30,
+                cancellable=False,
+            ),
+            {"succeeded"},
+        )
+        try:
+            candidate = validate_configuration_candidate(envelope["result"]["artifact"])
+        except ConfigurationReviewError as exc:
+            raise OrchestrationError(str(exc)) from exc
+        directory = Path(output_directory).expanduser().resolve()
+        candidate_path = directory / f"{review_id}-configuration-candidate.json"
+        write_json(candidate_path, candidate)
+        return {
+            "schema_version": "pg_play/configuration-candidate-result-v1",
+            "review_id": review_id,
+            "facts_path": str(Path(facts_path).expanduser().resolve()),
+            "candidate_path": str(candidate_path),
+            "candidate_hash": candidate["artifact_hash"],
+            "inputs": inputs,
+            "derived_inputs": context["derived_inputs"],
+            "resource_overrides": context["resource_overrides"],
+            "warnings": envelope.get("warnings") or [],
+        }
+
+    @staticmethod
+    def compare_configuration_candidate(
+        facts_path: str | Path,
+        candidate_path: str | Path,
+        output_directory: str | Path,
+        review_id: str,
+    ) -> dict[str, Any]:
+        try:
+            comparison = compare_configuration(facts_path, candidate_path)
+            json_path, markdown_path = write_comparison_artifacts(
+                comparison, output_directory, review_id
+            )
+        except (ConfigurationReviewError, PgDiagValidationError) as exc:
+            raise OrchestrationError(str(exc)) from exc
+        return {
+            "review_id": review_id,
+            "comparison": comparison,
+            "outputs": [str(json_path), str(markdown_path)],
+        }
 
     def validate_experiment(self, manifest_path: str | Path) -> dict[str, Any]:
         manifest = load_manifest(manifest_path)
@@ -415,80 +710,329 @@ class PgPlayService:
         plan_hash: str,
         run_id: str,
     ) -> dict[str, Any]:
-        if not _RUN_ID_RE.fullmatch(run_id):
-            raise OrchestrationError(f"run_id must match {_RUN_ID_RE.pattern}")
+        """Run synchronously for CLI compatibility using the durable state engine."""
+        manifest, plan, state = self._create_run(
+            manifest_path,
+            plan_hash=plan_hash,
+            run_id=run_id,
+            allow_existing_success=True,
+        )
+        if state["state"] == "succeeded":
+            return state
+        return self._execute_experiment(manifest, plan, state, resume=False)
+
+    def start_experiment(
+        self,
+        manifest_path: str | Path,
+        *,
+        plan_hash: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Create a durable run and return immediately after starting its worker."""
+        manifest, _plan, state = self._create_run(
+            manifest_path,
+            plan_hash=plan_hash,
+            run_id=run_id,
+            allow_existing_success=False,
+        )
+        context = self._run_context(manifest, run_id)
+        with exclusive_lock(context.run_directory / "control.lock"):
+            state = read_state(context.state_path)
+            if state.get("state") != "queued" or context.cancel_path.exists():
+                raise OrchestrationError(
+                    f"run_id {run_id} changed state before its worker could start"
+                )
+            return self._spawn_worker(manifest, state, resume=False)
+
+    def resume_experiment(
+        self,
+        manifest_path: str | Path,
+        *,
+        plan_hash: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Resume only a verified failed, cancelled, or interrupted durable run."""
+        self._validate_run_id(run_id)
         manifest = load_manifest(manifest_path)
-        plan = self.plan_experiment(manifest_path)
-        if plan["plan_hash"] != plan_hash:
-            raise OrchestrationError(
-                f"stale experiment plan: expected {plan_hash}, current plan is {plan['plan_hash']}"
+        context = self._run_context(manifest, run_id)
+        if not context.state_path.is_file():
+            raise OrchestrationError(f"run_id {run_id} does not exist")
+        with exclusive_lock(context.run_directory / "control.lock"):
+            return self._resume_experiment_locked(
+                manifest,
+                context,
+                plan_hash=plan_hash,
             )
-        run_directory = manifest.artifact_root / run_id
-        state_path = run_directory / "state.json"
-        existing = read_state(state_path)
-        if existing.get("state") == "succeeded" and existing.get("plan_hash") == plan_hash:
-            return existing
-        if existing.get("state") != "not_found":
+
+    def _resume_experiment_locked(
+        self,
+        manifest: ExperimentManifest,
+        context: _ExecutionContext,
+        *,
+        plan_hash: str,
+    ) -> dict[str, Any]:
+        run_id = context.run_id
+        state = self._reconcile_worker(context)
+        if state.get("state") not in RESUMABLE_STATES:
             raise OrchestrationError(
-                f"run_id {run_id} already has immutable state {existing.get('state')!r}"
+                f"run_id {run_id} is not resumable from state {state.get('state')!r}"
             )
-        run_directory.mkdir(parents=True, exist_ok=True)
-        state: dict[str, Any] = {
-            "schema_version": "pg_play/run-state-v1",
+        worker = state.get("worker")
+        if isinstance(worker, dict) and recorded_process_is_alive(worker):
+            raise OrchestrationError(
+                f"run_id {run_id} still has a live worker finishing its current attempt"
+            )
+        if state.get("plan_hash") != plan_hash:
+            raise OrchestrationError(
+                f"resume plan hash mismatch: state has {state.get('plan_hash')}, "
+                f"request supplied {plan_hash}"
+            )
+        if state.get("manifest_hash") != manifest.document_hash:
+            raise OrchestrationError("experiment manifest changed since the run was created")
+        plan = self._load_stored_plan(context, plan_hash)
+        self._validate_core_artifacts(
+            manifest,
+            plan,
+            state,
+            expected_run_id=context.run_id,
+        )
+        self._validate_component_versions(plan)
+        self._validate_resumable_steps(state, context.run_directory)
+        if terminate_recorded_process(context.active_process_path):
+            self._event(
+                context,
+                "orphan_component_terminated",
+                state=state.get("state"),
+            )
+        self._archive_cancel_request(context, int(state.get("attempt", 1)))
+        state["attempt"] = int(state.get("attempt", 1)) + 1
+        state["state"] = "queued"
+        state["worker"] = None
+        state["error"] = None
+        state["resumed_at"] = utc_now()
+        write_state(context.state_path, state)
+        self._event(
+            context,
+            "resume_requested",
+            state="queued",
+            data={"attempt": state["attempt"]},
+        )
+        return self._spawn_worker(manifest, state, resume=True)
+
+    def experiment_events(
+        self,
+        manifest_path: str | Path,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        self._validate_run_id(run_id)
+        manifest = load_manifest(manifest_path)
+        context = self._run_context(manifest, run_id)
+        if read_state(context.state_path).get("state") == "not_found":
+            raise OrchestrationError(f"run_id {run_id} does not exist")
+        return {
+            "schema_version": "pg_play/run-events-v1",
             "experiment_id": manifest.experiment_id,
             "run_id": run_id,
-            "plan_hash": plan_hash,
-            "manifest_hash": manifest.document_hash,
-            "state": "running",
-            "steps": [],
-            "artifacts": [],
-            "error": None,
+            **read_events(
+                context.events_path,
+                after_sequence=after_sequence,
+                limit=limit,
+            ),
+        }
+
+    def cancel_experiment(
+        self,
+        manifest_path: str | Path,
+        run_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Request cooperative cancellation without trusting an unowned PID."""
+        self._validate_run_id(run_id)
+        manifest = load_manifest(manifest_path)
+        context = self._run_context(manifest, run_id)
+        if not context.state_path.is_file():
+            raise OrchestrationError(f"run_id {run_id} does not exist")
+        with exclusive_lock(context.run_directory / "control.lock"):
+            return self._cancel_experiment_locked(manifest, context, reason=reason)
+
+    def _cancel_experiment_locked(
+        self,
+        manifest: ExperimentManifest,
+        context: _ExecutionContext,
+        *,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        run_id = context.run_id
+        state = self._reconcile_worker(context)
+        current = state.get("state")
+        if current == "cancelled":
+            return state
+        if current in TERMINAL_STATES:
+            raise OrchestrationError(f"run_id {run_id} is already terminal: {current}")
+        clean_reason = (reason or "requested by operator").strip()
+        if not clean_reason or len(clean_reason) > 500:
+            raise OrchestrationError("cancellation reason must contain 1 to 500 characters")
+        request = {
+            "schema_version": "pg_play/cancel-request-v1",
+            "run_id": run_id,
+            "requested_at": utc_now(),
+            "reason": clean_reason,
+        }
+        if not context.cancel_path.exists():
+            write_json(context.cancel_path, request)
+            self._event(
+                context,
+                "cancellation_requested",
+                state="cancelling",
+                data={"reason": clean_reason},
+            )
+        else:
+            request = read_state(context.cancel_path)
+        worker = state.get("worker")
+        if not isinstance(worker, dict) or not recorded_process_is_alive(worker):
+            terminate_recorded_process(context.active_process_path)
+            try:
+                self._stop_workload_after_lost_worker(manifest, state, context)
+            except Exception as exc:
+                self._fail_running_step(state, context, "failed", str(exc))
+                state["state"] = "failed"
+                state["cancellation"] = request
+                state["error"] = {
+                    "code": "cancellation_cleanup_failed",
+                    "message": f"workload cleanup failed after worker loss: {exc}",
+                }
+                write_state(context.state_path, state)
+                self._event(
+                    context,
+                    "cancellation_cleanup_failed",
+                    state="failed",
+                    data={"message": str(exc)},
+                )
+                return state
+            state["state"] = "cancelled"
+            state["cancellation"] = request
+            state["error"] = {
+                "code": "cancelled",
+                "message": str(request.get("reason") or clean_reason),
+            }
+            write_state(context.state_path, state)
+            self._event(context, "run_cancelled", state="cancelled")
+            return state
+        response = dict(state)
+        response["effective_state"] = "cancelling"
+        response["cancellation"] = request
+        return response
+
+    def _stop_workload_after_lost_worker(
+        self,
+        manifest: ExperimentManifest,
+        state: dict[str, Any],
+        context: _ExecutionContext,
+    ) -> None:
+        if not manifest.workload.stop_after_report:
+            return
+        start_status = self._latest_step_status(state, "start-workload")
+        stop_status = self._latest_step_status(state, "stop-workload")
+        if start_status not in {"running", "succeeded", "partial"} or stop_status == "succeeded":
+            return
+        previous_context = self._execution_context
+        self._execution_context = context
+        try:
+            self._begin_step(state, context, "stop-workload", cancellable=False)
+            stop_result = self._invoke(
+                "pg_workload",
+                ("stop", "--root", str(manifest.workload.project)),
+                request_id=f"{manifest.experiment_id}-{context.run_id}-cancel-stop-workload",
+                cancellable=False,
+            )
+            self._step(
+                state,
+                context.state_path,
+                "stop-workload",
+                stop_result,
+                {"succeeded", "blocked"},
+            )
+        finally:
+            self._execution_context = previous_context
+
+    def _execute_experiment(
+        self,
+        manifest: ExperimentManifest,
+        plan: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        resume: bool,
+    ) -> dict[str, Any]:
+        run_id = str(state["run_id"])
+        context = self._run_context(manifest, run_id)
+        run_directory = context.run_directory
+        state_path = context.state_path
+        self._execution_context = context
+        state = read_state(state_path)
+        state["state"] = "running"
+        state["worker"] = {
+            "pid": os.getpid(),
+            "process_start_ticks": process_start_ticks(os.getpid()),
+            "started_at": utc_now(),
+            "mode": "background" if os.environ.get("PG_PLAY_WORKER") == "1" else "synchronous",
         }
         write_state(state_path, state)
-        manifest_snapshot = run_directory / "experiment.yaml"
-        write_text(
-            manifest_snapshot,
-            manifest.source.read_text(encoding="utf-8"),
+        self._event(
+            context,
+            "run_resumed" if resume else "run_started",
+            state="running",
+            data={"attempt": state.get("attempt", 1)},
         )
-        plan_path = run_directory / "plan.json"
-        write_json(plan_path, plan)
-        state["artifacts"].extend(
-            [
-                {
-                    "kind": "ExperimentManifest",
-                    "path": str(manifest_snapshot),
-                    "hash": manifest.document_hash,
-                },
-                {
-                    "kind": "ExperimentPlan",
-                    "path": str(plan_path),
-                    "hash": plan_hash,
-                },
-            ]
+        workload_stop_needed = self._latest_step_status(state, "start-workload") in {
+            "running",
+            "succeeded",
+        }
+        partial_result = any(
+            self._latest_step_status(state, name) == "partial"
+            for name in ("benchmark", "diagnostics")
         )
-        write_state(state_path, state)
-        candidate_parameters = plan["configuration"]["parameters"]
-        parameters, _stand_managed = self._partition_parameters(candidate_parameters)
-        config = load_config(
-            manifest.stand_config,
-            project_directory=manifest.stand_project,
-            postgres_parameters=parameters,
-        )
-        connection = self._connection_descriptor(manifest, config)
-        candidate_path = run_directory / "postgresql-parameters.json"
-        write_json(candidate_path, candidate_parameters)
-        state["artifacts"].append(
-            {
-                "kind": "PostgreSQLParameters",
-                "path": str(candidate_path),
-                "hash": canonical_hash(candidate_parameters),
-            }
-        )
-        write_state(state_path, state)
-        workload_stop_needed = False
-        partial_result = False
         try:
+            candidate_parameters = plan["configuration"]["parameters"]
+            parameters, _stand_managed = self._partition_parameters(candidate_parameters)
+            config = load_config(
+                manifest.stand_config,
+                project_directory=manifest.stand_project,
+                postgres_parameters=parameters,
+            )
+            expected_stand_hash = plan["stand"].get("desired_state_hash")
+            if not isinstance(expected_stand_hash, str):
+                raise OrchestrationError("stored experiment plan has no stand desired-state hash")
+            if config.config_hash != expected_stand_hash:
+                raise OrchestrationError(
+                    "stand desired configuration changed since the experiment was planned"
+                )
+            connection = self._connection_descriptor(manifest, config)
+            stand_completed = self._step_completed(state, "stand", run_directory)
             stand_plan = plan["stand"]
+            if resume:
+                stand_plan = self._require(
+                    self._invoke(
+                        "pg_stand",
+                        (
+                            "--config",
+                            str(manifest.stand_config),
+                            "--parameters-json=-",
+                            "plan",
+                        ),
+                        request_id=f"{manifest.experiment_id}-{run_id}-resume-plan-stand",
+                        input_document=parameters,
+                        cwd=manifest.stand_project,
+                    ),
+                    {"succeeded", "blocked"},
+                )["result"]
+                if stand_plan.get("desired_state_hash") != expected_stand_hash:
+                    raise OrchestrationError(
+                        "stand desired configuration changed since the experiment was planned"
+                    )
             required_action = stand_plan["required_action"]
             if required_action == "blocked":
                 raise OrchestrationError(str(stand_plan.get("reason", "stand plan is blocked")))
@@ -505,61 +1049,71 @@ class PgPlayService:
                 )
             else:
                 raise OrchestrationError(f"unsupported stand action: {required_action}")
-            self._step(
-                state,
-                state_path,
-                "stand",
-                self._invoke(
-                    "pg_stand",
-                    (
-                        "--config",
-                        str(manifest.stand_config),
-                        "--parameters-json=-",
-                        *stand_args,
-                    ),
-                    request_id=f"{manifest.experiment_id}-{run_id}-stand",
-                    input_document=parameters,
-                    cwd=manifest.stand_project,
-                    timeout_seconds=900,
-                ),
-                {"succeeded"},
-            )
-            secret_context = self._credential_context(manifest, config, connection)
-            if manifest.phases.benchmark:
-                assert manifest.benchmark is not None
-                benchmark = self._invoke(
-                    "pg_perf_bench",
-                    (
-                        *self._benchmark_args(
-                            manifest.benchmark,
-                            config,
-                            run_directory / "benchmark",
-                        ),
-                        "--plan-hash",
-                        plan["benchmark"]["plan_hash"],
-                    ),
-                    request_id=f"{manifest.experiment_id}-{run_id}-benchmark",
-                    environment={
-                        **self._connection_environment(config, None),
-                        "PGPASSWORD": secret_context["admin_password"],
-                    },
-                    timeout_seconds=max(
-                        900,
-                        manifest.benchmark.command_timeout
-                        * (len(manifest.benchmark.iterations) * 2 + 2),
-                    ),
-                )
+            stand_needs_reconcile = resume and required_action != "none"
+            if not stand_completed or stand_needs_reconcile:
+                self._begin_step(state, context, "stand")
                 self._step(
                     state,
                     state_path,
-                    "benchmark",
-                    benchmark,
-                    {"succeeded", "partial"},
+                    "stand",
+                    self._invoke(
+                        "pg_stand",
+                        (
+                            "--config",
+                            str(manifest.stand_config),
+                            "--parameters-json=-",
+                            *stand_args,
+                        ),
+                        request_id=f"{manifest.experiment_id}-{run_id}-stand",
+                        input_document=parameters,
+                        cwd=manifest.stand_project,
+                        timeout_seconds=900,
+                    ),
+                    {"succeeded"},
                 )
-                state["artifacts"].extend(benchmark.get("artifacts") or [])
-                partial_result = benchmark["status"] == "partial"
-                write_state(state_path, state)
+            elif resume:
+                self._event(context, "step_reused", state="running", step="stand")
+            secret_context = self._credential_context(manifest, config, connection)
+            if manifest.phases.benchmark:
+                assert manifest.benchmark is not None
+                if not self._step_completed(state, "benchmark", run_directory):
+                    self._begin_step(state, context, "benchmark")
+                    benchmark = self._invoke(
+                        "pg_perf_bench",
+                        (
+                            *self._benchmark_args(
+                                manifest.benchmark,
+                                config,
+                                run_directory / "benchmark",
+                            ),
+                            "--plan-hash",
+                            plan["benchmark"]["plan_hash"],
+                        ),
+                        request_id=f"{manifest.experiment_id}-{run_id}-benchmark",
+                        environment={
+                            **self._connection_environment(config, None),
+                            "PGPASSWORD": secret_context["admin_password"],
+                        },
+                        timeout_seconds=max(
+                            900,
+                            manifest.benchmark.command_timeout
+                            * (len(manifest.benchmark.iterations) * 2 + 2),
+                        ),
+                    )
+                    self._step(
+                        state,
+                        state_path,
+                        "benchmark",
+                        benchmark,
+                        {"succeeded", "partial"},
+                    )
+                    state["artifacts"].extend(benchmark.get("artifacts") or [])
+                    partial_result = partial_result or benchmark["status"] == "partial"
+                    write_state(state_path, state)
+                elif resume:
+                    self._event(context, "step_reused", state="running", step="benchmark")
             if not manifest.phases.workload_diagnostics:
+                self._raise_if_cancelled(context, "experiment completion")
                 state["state"] = "partial" if partial_result else "succeeded"
                 write_state(state_path, state)
                 return state
@@ -578,20 +1132,27 @@ class PgPlayService:
                     plan["workload"]["prepare_db"]["plan_hash"],
                 )
             )
-            self._step(
-                state,
-                state_path,
-                "prepare-db",
-                self._invoke(
-                    "pg_workload",
-                    tuple(prepare_args),
-                    request_id=f"{manifest.experiment_id}-{run_id}-prepare-db",
-                    environment=environment,
-                    timeout_seconds=900,
-                ),
-                {"succeeded"},
-            )
-            if manifest.workload.install:
+            if not self._step_completed(state, "prepare-db", run_directory):
+                self._begin_step(state, context, "prepare-db")
+                self._step(
+                    state,
+                    state_path,
+                    "prepare-db",
+                    self._invoke(
+                        "pg_workload",
+                        tuple(prepare_args),
+                        request_id=f"{manifest.experiment_id}-{run_id}-prepare-db",
+                        environment=environment,
+                        timeout_seconds=900,
+                    ),
+                    {"succeeded"},
+                )
+            elif resume:
+                self._event(context, "step_reused", state="running", step="prepare-db")
+            if manifest.workload.install and not self._step_completed(
+                state, "install-workload", run_directory
+            ):
+                self._begin_step(state, context, "install-workload")
                 self._step(
                     state,
                     state_path,
@@ -611,69 +1172,119 @@ class PgPlayService:
                     ),
                     {"succeeded"},
                 )
+            elif manifest.workload.install and resume:
+                self._event(context, "step_reused", state="running", step="install-workload")
             workload_stop_needed = True
-            self._step(
-                state,
-                state_path,
-                "start-workload",
-                self._invoke(
-                    "pg_workload",
-                    (
-                        "start",
-                        *common_args,
-                        *self._profile_args(manifest),
-                        "--enable-selected",
-                        "--run-immediately",
-                        *(
-                            (
-                                "--job-interval-seconds",
-                                str(manifest.workload.job_interval_seconds),
-                            )
-                            if manifest.workload.job_interval_seconds is not None
-                            else ()
+            diagnostics_complete = self._step_completed(state, "diagnostics", run_directory)
+            should_start_workload = not diagnostics_complete and (
+                not self._step_completed(state, "start-workload", run_directory) or resume
+            )
+            if should_start_workload:
+                self._begin_step(state, context, "start-workload")
+                self._step(
+                    state,
+                    state_path,
+                    "start-workload",
+                    self._invoke(
+                        "pg_workload",
+                        (
+                            "start",
+                            *common_args,
+                            *self._profile_args(manifest),
+                            "--enable-selected",
+                            "--run-immediately",
+                            *(
+                                (
+                                    "--job-interval-seconds",
+                                    str(manifest.workload.job_interval_seconds),
+                                )
+                                if manifest.workload.job_interval_seconds is not None
+                                else ()
+                            ),
+                            "--plan-hash",
+                            plan["workload"]["scheduler"]["plan_hash"],
                         ),
-                        "--plan-hash",
-                        plan["workload"]["scheduler"]["plan_hash"],
+                        request_id=f"{manifest.experiment_id}-{run_id}-start-workload",
+                        environment=environment,
                     ),
-                    request_id=f"{manifest.experiment_id}-{run_id}-start-workload",
-                    environment=environment,
-                ),
-                {"running"},
-            )
-            diagnostic = self._invoke(
-                "pg_diag",
-                self._diagnostic_args(manifest, config, connection, run_directory),
-                request_id=f"{manifest.experiment_id}-{run_id}-diag",
-                environment=self._connection_environment(config, None),
-                timeout_seconds=max(900, manifest.diagnostics.duration_seconds + 300),
-            )
-            self._step(
-                state,
-                state_path,
-                "diagnostics",
-                diagnostic,
-                {"succeeded", "partial"},
-            )
-            state["artifacts"].extend(diagnostic.get("artifacts") or [])
-            partial_result = partial_result or diagnostic["status"] == "partial"
+                    {"running"},
+                )
+            elif resume:
+                self._event(context, "step_reused", state="running", step="start-workload")
+            if not diagnostics_complete:
+                self._begin_step(state, context, "diagnostics")
+                diagnostic = self._invoke(
+                    "pg_diag",
+                    self._diagnostic_args(manifest, config, connection, run_directory),
+                    request_id=f"{manifest.experiment_id}-{run_id}-diag",
+                    environment=self._connection_environment(config, None),
+                    timeout_seconds=max(900, manifest.diagnostics.duration_seconds + 300),
+                )
+                self._step(
+                    state,
+                    state_path,
+                    "diagnostics",
+                    diagnostic,
+                    {"succeeded", "partial"},
+                )
+                state["artifacts"].extend(diagnostic.get("artifacts") or [])
+                partial_result = partial_result or diagnostic["status"] == "partial"
+            elif resume:
+                self._event(context, "step_reused", state="running", step="diagnostics")
+            self._raise_if_cancelled(context, "experiment completion")
             state["state"] = "partial" if partial_result else "succeeded"
             write_state(state_path, state)
             return state
+        except ComponentCancelledError as exc:
+            cancellation = (
+                read_state(context.cancel_path)
+                if context.cancel_path.exists()
+                else {
+                    "schema_version": "pg_play/cancel-request-v1",
+                    "requested_at": utc_now(),
+                    "reason": str(exc),
+                }
+            )
+            self._fail_running_step(state, context, "cancelled", str(exc))
+            state["state"] = "cancelled"
+            state["cancellation"] = cancellation
+            state["error"] = {"code": "cancelled", "message": str(exc)}
+            write_state(state_path, state)
+            self._event(context, "run_cancelled", state="cancelled")
+            return state
         except Exception as exc:
+            self._fail_running_step(state, context, "failed", str(exc))
             state["state"] = "failed"
             state["error"] = {"code": "orchestration_error", "message": str(exc)}
             write_state(state_path, state)
+            self._event(
+                context,
+                "run_failed",
+                state="failed",
+                data={"message": str(exc)},
+            )
             raise
         finally:
             if workload_stop_needed and manifest.workload.stop_after_report:
                 try:
+                    self._begin_step(state, context, "stop-workload", cancellable=False)
                     stop_result = self._invoke(
                         "pg_workload",
                         ("stop", "--root", str(manifest.workload.project)),
                         request_id=f"{manifest.experiment_id}-{run_id}-stop-workload",
+                        cancellable=False,
                     )
-                    state["steps"].append(self._step_record("stop-workload", stop_result))
-                    if stop_result["status"] != "succeeded" and state["state"] == "succeeded":
+                    self._step(
+                        state,
+                        state_path,
+                        "stop-workload",
+                        stop_result,
+                        {"succeeded", "blocked"},
+                    )
+                    if (
+                        stop_result["status"] not in {"succeeded", "blocked"}
+                        and state["state"] == "succeeded"
+                    ):
                         state["state"] = "partial"
                         state["error"] = {
                             "code": "workload_stop_failed",
@@ -682,20 +1293,7 @@ class PgPlayService:
                             ),
                         }
                 except Exception as stop_error:
-                    state["steps"].append(
-                        {
-                            "name": "stop-workload",
-                            "component": "pg_workload",
-                            "command": "stop",
-                            "status": "failed",
-                            "artifacts": [],
-                            "warnings": [],
-                            "error": {
-                                "code": "workload_stop_failed",
-                                "message": str(stop_error),
-                            },
-                        }
-                    )
+                    self._fail_running_step(state, context, "failed", str(stop_error))
                     if state["state"] == "succeeded":
                         state["state"] = "partial"
                         state["error"] = {
@@ -704,11 +1302,518 @@ class PgPlayService:
                                 "diagnostics completed, but the workload could not be stopped"
                             ),
                         }
-                write_state(state_path, state)
+            state["worker"] = None
+            write_state(state_path, state)
+            if state.get("state") in {"succeeded", "partial"}:
+                self._event(context, "run_finished", state=state["state"])
+            self._execution_context = None
 
     def experiment_status(self, manifest_path: str | Path, run_id: str) -> dict[str, Any]:
+        self._validate_run_id(run_id)
         manifest = load_manifest(manifest_path)
-        return read_state(manifest.artifact_root / run_id / "state.json")
+        context = self._run_context(manifest, run_id)
+        if not context.state_path.is_file():
+            return read_state(context.state_path)
+        with exclusive_lock(context.run_directory / "control.lock"):
+            return self._reconcile_worker(context)
+
+    @staticmethod
+    def _validate_run_id(run_id: str) -> None:
+        if not _RUN_ID_RE.fullmatch(run_id):
+            raise OrchestrationError(f"run_id must match {_RUN_ID_RE.pattern}")
+
+    @staticmethod
+    def _run_context(manifest: ExperimentManifest, run_id: str) -> _ExecutionContext:
+        run_directory = manifest.artifact_root / run_id
+        return _ExecutionContext(
+            run_id=run_id,
+            run_directory=run_directory,
+            state_path=run_directory / "state.json",
+            events_path=run_directory / "events.jsonl",
+            cancel_path=run_directory / "cancel.request.json",
+            active_process_path=run_directory / "active-process.json",
+        )
+
+    @staticmethod
+    def _event(
+        context: _ExecutionContext,
+        event_type: str,
+        *,
+        state: str | None = None,
+        step: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return append_event(
+            context.events_path,
+            run_id=context.run_id,
+            event_type=event_type,
+            state=state,
+            step=step,
+            data=data,
+        )
+
+    def _create_run(
+        self,
+        manifest_path: str | Path,
+        *,
+        plan_hash: str,
+        run_id: str,
+        allow_existing_success: bool,
+    ) -> tuple[ExperimentManifest, dict[str, Any], dict[str, Any]]:
+        self._validate_run_id(run_id)
+        manifest = load_manifest(manifest_path)
+        context = self._run_context(manifest, run_id)
+        existing = read_state(context.state_path)
+        if (
+            allow_existing_success
+            and existing.get("state") == "succeeded"
+            and existing.get("plan_hash") == plan_hash
+        ):
+            return manifest, self._load_stored_plan(context, plan_hash), existing
+        if existing.get("state") != "not_found":
+            hint = (
+                "; use resume-experiment for a failed, cancelled, or interrupted run"
+                if existing.get("state") in RESUMABLE_STATES
+                else ""
+            )
+            raise OrchestrationError(
+                f"run_id {run_id} already exists in state {existing.get('state')!r}{hint}"
+            )
+        plan = self.plan_experiment(manifest.source)
+        if plan["plan_hash"] != plan_hash:
+            raise OrchestrationError(
+                f"stale experiment plan: expected {plan_hash}, current plan is {plan['plan_hash']}"
+            )
+        context.run_directory.mkdir(parents=True, exist_ok=False)
+        created_at = utc_now()
+        state: dict[str, Any] = {
+            "schema_version": RUN_STATE_SCHEMA_VERSION,
+            "experiment_id": manifest.experiment_id,
+            "run_id": run_id,
+            "plan_hash": plan_hash,
+            "manifest_hash": manifest.document_hash,
+            "state": "queued",
+            "attempt": 1,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "worker": None,
+            "steps": [],
+            "artifacts": [],
+            "cancellation": None,
+            "error": None,
+        }
+        manifest_snapshot = context.run_directory / "experiment.yaml"
+        plan_path = context.run_directory / "plan.json"
+        candidate_path = context.run_directory / "postgresql-parameters.json"
+        write_text(manifest_snapshot, manifest.source.read_text(encoding="utf-8"))
+        write_json(plan_path, plan)
+        candidate_parameters = plan["configuration"]["parameters"]
+        write_json(candidate_path, candidate_parameters)
+        state["artifacts"].extend(
+            [
+                {
+                    "kind": "ExperimentManifest",
+                    "path": str(manifest_snapshot),
+                    "hash": manifest.document_hash,
+                },
+                {
+                    "kind": "ExperimentPlan",
+                    "path": str(plan_path),
+                    "hash": plan_hash,
+                },
+                {
+                    "kind": "PostgreSQLParameters",
+                    "path": str(candidate_path),
+                    "hash": canonical_hash(candidate_parameters),
+                },
+                {
+                    "kind": "ExperimentEvents",
+                    "path": str(context.events_path),
+                },
+                {
+                    "kind": "WorkerLog",
+                    "path": str(context.run_directory / "worker.log"),
+                },
+            ]
+        )
+        write_state(context.state_path, state)
+        self._event(
+            context,
+            "run_created",
+            state="queued",
+            data={"attempt": 1, "plan_hash": plan_hash},
+        )
+        return manifest, plan, state
+
+    @staticmethod
+    def _load_stored_plan(
+        context: _ExecutionContext,
+        expected_plan_hash: str,
+    ) -> dict[str, Any]:
+        path = context.run_directory / "plan.json"
+        plan = read_state(path)
+        if plan.get("state") == "not_found" or plan.get("plan_hash") != expected_plan_hash:
+            raise OrchestrationError("stored experiment plan is missing or has the wrong hash")
+        unhashed = dict(plan)
+        unhashed.pop("plan_hash", None)
+        if canonical_hash(unhashed) != expected_plan_hash:
+            raise OrchestrationError("stored experiment plan content failed hash verification")
+        return plan
+
+    def _validate_core_artifacts(
+        self,
+        manifest: ExperimentManifest,
+        plan: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        expected_run_id: str,
+    ) -> None:
+        if state.get("schema_version") != RUN_STATE_SCHEMA_VERSION:
+            raise OrchestrationError("run state schema is not recoverable by this pg_play version")
+        if state.get("run_id") != expected_run_id:
+            raise OrchestrationError("durable run state has the wrong run_id")
+        if state.get("experiment_id") != manifest.experiment_id:
+            raise OrchestrationError("durable run state has the wrong experiment_id")
+        if plan.get("experiment_id") != manifest.experiment_id:
+            raise OrchestrationError("stored experiment plan has the wrong experiment_id")
+        if plan.get("manifest_hash") != state.get("manifest_hash"):
+            raise OrchestrationError("stored experiment plan has the wrong manifest hash")
+        context = self._run_context(manifest, expected_run_id)
+        manifest_path = context.run_directory / "experiment.yaml"
+        parameters_path = context.run_directory / "postgresql-parameters.json"
+        try:
+            manifest_document = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise OrchestrationError(
+                f"stored experiment manifest cannot be verified: {exc}"
+            ) from exc
+        if canonical_hash(manifest_document) != state["manifest_hash"]:
+            raise OrchestrationError("stored experiment manifest failed hash verification")
+        if manifest.document_hash != state["manifest_hash"]:
+            raise OrchestrationError("current experiment manifest differs from the stored manifest")
+        if plan["configuration"]["parameters"] != read_state(parameters_path):
+            raise OrchestrationError("stored PostgreSQL parameter artifact failed verification")
+        parameters, _stand_managed = self._partition_parameters(plan["configuration"]["parameters"])
+        current_config = load_config(
+            manifest.stand_config,
+            project_directory=manifest.stand_project,
+            postgres_parameters=parameters,
+        )
+        if current_config.config_hash != plan["stand"].get("desired_state_hash"):
+            raise OrchestrationError(
+                "stand desired configuration changed since the experiment was planned"
+            )
+
+    def _validate_component_versions(self, plan: dict[str, Any]) -> None:
+        for component, expected_version in plan["components"].items():
+            envelope = self._require(
+                self._invoke(
+                    component,
+                    ("--component-capabilities",),
+                    request_id=f"resume-version-{component}",
+                    timeout_seconds=30,
+                ),
+                {"succeeded"},
+            )
+            if envelope["component_version"] != expected_version:
+                raise OrchestrationError(
+                    f"component version changed for {component}: plan requires "
+                    f"{expected_version}, installed version is {envelope['component_version']}"
+                )
+
+    def _validate_resumable_steps(
+        self,
+        state: dict[str, Any],
+        run_directory: Path,
+    ) -> None:
+        changed = False
+        for step in state.get("steps") or []:
+            name = str(step.get("name") or "")
+            expected_policy = _RESUMABLE_STEP_POLICIES.get(name)
+            if expected_policy is None:
+                raise OrchestrationError(
+                    f"run contains a step with no safe resume policy: {name!r}"
+                )
+            if step.get("resume_policy") != expected_policy:
+                raise OrchestrationError(f"run step {name!r} has an invalid safe resume policy")
+            if step.get("status") in {"succeeded", "partial", "running"}:
+                artifacts = step.get("artifacts") or []
+                valid, problems = self._artifacts_valid(artifacts, run_directory)
+                if name in _REQUIRED_STEP_ARTIFACTS and not artifacts:
+                    valid = False
+                    problems.append("completed report step recorded no artifacts")
+                step["resume_validation"] = {
+                    "checked_at": utc_now(),
+                    "valid": valid,
+                    "problems": problems,
+                }
+                changed = True
+        if changed:
+            context = _ExecutionContext(
+                run_id=str(state["run_id"]),
+                run_directory=run_directory,
+                state_path=run_directory / "state.json",
+                events_path=run_directory / "events.jsonl",
+                cancel_path=run_directory / "cancel.request.json",
+                active_process_path=run_directory / "active-process.json",
+            )
+            write_state(context.state_path, state)
+            for step in state.get("steps") or []:
+                validation = step.get("resume_validation") or {}
+                if not validation.get("valid", True):
+                    self._event(
+                        context,
+                        "step_artifacts_invalidated",
+                        state=state.get("state"),
+                        step=step.get("name"),
+                        data={"problems": validation.get("problems") or []},
+                    )
+
+    @staticmethod
+    def _artifacts_valid(
+        artifacts: list[dict[str, Any]],
+        run_directory: Path,
+    ) -> tuple[bool, list[str]]:
+        problems: list[str] = []
+        for artifact in artifacts:
+            raw_path = artifact.get("path")
+            if not isinstance(raw_path, str) or not raw_path:
+                problems.append("artifact has no path")
+                continue
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = run_directory / path
+            if not path.exists():
+                problems.append(f"missing artifact: {path}")
+                continue
+            expected_size = artifact.get("size")
+            if (
+                expected_size is not None
+                and path.is_file()
+                and path.stat().st_size != expected_size
+            ):
+                problems.append(f"artifact size mismatch: {path}")
+            expected_hash = artifact.get("sha256") or artifact.get("hash")
+            if (
+                isinstance(expected_hash, str)
+                and expected_hash.startswith("sha256:")
+                and path.is_file()
+            ):
+                actual = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                if actual != expected_hash:
+                    problems.append(f"artifact hash mismatch: {path}")
+        return not problems, problems
+
+    @staticmethod
+    def _latest_step(state: dict[str, Any], name: str) -> dict[str, Any] | None:
+        return next(
+            (step for step in reversed(state.get("steps") or []) if step.get("name") == name),
+            None,
+        )
+
+    @classmethod
+    def _latest_step_status(cls, state: dict[str, Any], name: str) -> str | None:
+        step = cls._latest_step(state, name)
+        return str(step.get("status")) if step is not None else None
+
+    def _step_completed(
+        self,
+        state: dict[str, Any],
+        name: str,
+        run_directory: Path,
+    ) -> bool:
+        step = self._latest_step(state, name)
+        if step is None or step.get("status") not in {"succeeded", "partial"}:
+            return False
+        if name in _REQUIRED_STEP_ARTIFACTS and not step.get("artifacts"):
+            return False
+        validation = step.get("resume_validation")
+        if isinstance(validation, dict) and validation.get("valid") is False:
+            return False
+        valid, _problems = self._artifacts_valid(step.get("artifacts") or [], run_directory)
+        return valid
+
+    def _begin_step(
+        self,
+        state: dict[str, Any],
+        context: _ExecutionContext,
+        name: str,
+        *,
+        cancellable: bool = True,
+    ) -> None:
+        policy = _RESUMABLE_STEP_POLICIES.get(name)
+        if policy is None:
+            raise OrchestrationError(f"step {name!r} has no safe resume policy")
+        if cancellable and context.cancel_path.exists():
+            raise ComponentCancelledError(f"cancelled before step {name}")
+        state["steps"].append(
+            {
+                "name": name,
+                "component": None,
+                "command": None,
+                "status": "running",
+                "attempt": state.get("attempt", 1),
+                "resume_policy": policy,
+                "started_at": utc_now(),
+                "finished_at": None,
+                "artifacts": [],
+                "warnings": [],
+                "error": None,
+            }
+        )
+        write_state(context.state_path, state)
+        self._event(context, "step_started", state="running", step=name)
+
+    @staticmethod
+    def _raise_if_cancelled(context: _ExecutionContext, operation: str) -> None:
+        if context.cancel_path.exists():
+            raise ComponentCancelledError(f"cancelled before {operation}")
+
+    def _fail_running_step(
+        self,
+        state: dict[str, Any],
+        context: _ExecutionContext,
+        status: str,
+        message: str,
+    ) -> None:
+        step = next(
+            (
+                item
+                for item in reversed(state.get("steps") or [])
+                if item.get("status") == "running"
+            ),
+            None,
+        )
+        if step is None:
+            return
+        step["status"] = status
+        step["finished_at"] = utc_now()
+        step["error"] = {"code": status, "message": message}
+        write_state(context.state_path, state)
+        self._event(
+            context,
+            "step_cancelled" if status == "cancelled" else "step_failed",
+            state=state.get("state"),
+            step=step.get("name"),
+            data={"message": message},
+        )
+
+    def _spawn_worker(
+        self,
+        manifest: ExperimentManifest,
+        state: dict[str, Any],
+        *,
+        resume: bool,
+    ) -> dict[str, Any]:
+        context = self._run_context(manifest, str(state["run_id"]))
+        gate = context.run_directory / "worker.starting"
+        log_path = context.run_directory / "worker.log"
+        write_text(gate, "wait\n")
+        command = [
+            sys.executable,
+            "-m",
+            "pg_play.worker",
+            "--manifest",
+            str(manifest.source),
+            "--plan-hash",
+            str(state["plan_hash"]),
+            "--run-id",
+            str(state["run_id"]),
+            "--start-gate",
+            str(gate),
+        ]
+        if resume:
+            command.append("--resume")
+        environment = os.environ.copy()
+        environment["PG_PLAY_WORKER"] = "1"
+        descriptor: int | None = None
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.fchmod(descriptor, 0o600)
+            worker_log = os.fdopen(descriptor, "ab")
+            descriptor = None
+            with worker_log:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=worker_log,
+                    stderr=subprocess.STDOUT,
+                    env=environment,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+            state = read_state(context.state_path)
+            state["state"] = "queued"
+            state["worker"] = {
+                "pid": process.pid,
+                "process_start_ticks": process_start_ticks(process.pid),
+                "started_at": utc_now(),
+                "mode": "background",
+            }
+            write_state(context.state_path, state)
+            self._event(
+                context,
+                "worker_started",
+                state="queued",
+                data={"pid": process.pid, "attempt": state.get("attempt", 1)},
+            )
+            return state
+        except Exception as exc:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            state = read_state(context.state_path)
+            state["state"] = "failed"
+            state["worker"] = None
+            state["error"] = {"code": "worker_start_failed", "message": str(exc)}
+            write_state(context.state_path, state)
+            self._event(
+                context,
+                "worker_start_failed",
+                state="failed",
+                data={"message": str(exc)},
+            )
+            raise OrchestrationError(f"cannot start experiment worker: {exc}") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            gate.unlink(missing_ok=True)
+
+    def _reconcile_worker(self, context: _ExecutionContext) -> dict[str, Any]:
+        state = read_state(context.state_path)
+        if state.get("state") == "not_found" or state.get("state") not in _ACTIVE_STATES:
+            return state
+        worker = state.get("worker")
+        if isinstance(worker, dict) and recorded_process_is_alive(worker):
+            if context.cancel_path.exists():
+                result = dict(state)
+                result["effective_state"] = "cancelling"
+                result["cancellation"] = read_state(context.cancel_path)
+                return result
+            return state
+        state["state"] = "interrupted"
+        state["worker"] = None
+        state["error"] = {
+            "code": "worker_lost",
+            "message": "experiment worker is no longer running; verify and resume the run",
+        }
+        write_state(context.state_path, state)
+        self._event(context, "worker_lost", state="interrupted")
+        return state
+
+    @staticmethod
+    def _archive_cancel_request(context: _ExecutionContext, attempt: int) -> None:
+        if not context.cancel_path.exists():
+            return
+        destination = context.run_directory / f"cancel.request.attempt-{attempt}.json"
+        if destination.exists():
+            raise OrchestrationError(f"archived cancellation request already exists: {destination}")
+        context.cancel_path.replace(destination)
 
     def teardown_experiment(
         self,
@@ -879,7 +1984,9 @@ class PgPlayService:
         environment: dict[str, str] | None = None,
         cwd: Path | None = None,
         timeout_seconds: float = 600,
+        cancellable: bool = True,
     ) -> dict[str, Any]:
+        context = self._execution_context if cancellable else None
         return self.runner.run(
             ComponentInvocation(
                 component=component,
@@ -889,6 +1996,8 @@ class PgPlayService:
                 input_document=input_document,
                 environment=environment,
                 timeout_seconds=timeout_seconds,
+                cancel_path=context.cancel_path if context is not None else None,
+                active_process_path=(context.active_process_path if context is not None else None),
             )
         )
 
@@ -1362,8 +2471,36 @@ class PgPlayService:
         statuses: set[str],
     ) -> None:
         self._require(envelope, statuses)
-        state["steps"].append(self._step_record(name, envelope))
+        local_status = "partial" if envelope["status"] == "partial" else "succeeded"
+        running = next(
+            (
+                step
+                for step in reversed(state.get("steps") or [])
+                if step.get("name") == name and step.get("status") == "running"
+            ),
+            None,
+        )
+        record = self._step_record(name, envelope)
+        record["status"] = local_status
+        record["component_status"] = envelope["status"]
+        record["finished_at"] = utc_now()
+        if running is None:
+            record["attempt"] = state.get("attempt", 1)
+            record["resume_policy"] = _RESUMABLE_STEP_POLICIES[name]
+            record["started_at"] = record["finished_at"]
+            state["steps"].append(record)
+        else:
+            running.update(record)
         write_state(state_path, state)
+        context = self._execution_context
+        if context is not None:
+            self._event(
+                context,
+                "step_completed",
+                state=state.get("state"),
+                step=name,
+                data={"status": local_status, "component_status": envelope["status"]},
+            )
 
     @staticmethod
     def _step_record(name: str, envelope: dict[str, Any]) -> dict[str, Any]:
@@ -1372,6 +2509,7 @@ class PgPlayService:
             "component": envelope["component"],
             "command": envelope["command"],
             "status": envelope["status"],
+            "component_status": envelope["status"],
             "artifacts": envelope.get("artifacts") or [],
             "warnings": envelope.get("warnings") or [],
             "error": envelope.get("error"),

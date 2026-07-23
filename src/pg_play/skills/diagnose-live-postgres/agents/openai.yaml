@@ -1,0 +1,4 @@
+interface:
+  display_name: "Diagnose Live PostgreSQL"
+  short_description: "Capture a live PostgreSQL incident safely"
+  default_prompt: "Use $diagnose-live-postgres to capture and analyze a live PostgreSQL performance incident."

@@ -14,7 +14,10 @@ mcp = FastMCP(
     "pg_play",
     instructions=(
         "Plan and run reproducible PostgreSQL experiments through pg_play. "
-        "Always call validate_experiment and plan_experiment before run_experiment."
+        "Always call validate_experiment and plan_experiment before start_experiment. "
+        "Use experiment_status and experiment_events to observe a durable run. "
+        "For incidents on existing servers, call plan_live_diagnostics before "
+        "start_live_diagnostics and observe the detached capture through its status and events."
     ),
     json_response=True,
 )
@@ -31,6 +34,112 @@ def component_capabilities(component: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
+def plan_live_diagnostics(
+    target: dict[str, Any],
+    intent: str = "performance",
+    duration_seconds: float = 60,
+    interval_seconds: float = 5,
+) -> dict[str, Any]:
+    """Plan a bounded read-only pg_diag capture and report missing access inputs."""
+    return _service().plan_live_diagnostics(
+        target,
+        intent,
+        duration_seconds,
+        interval_seconds,
+    )
+
+
+@mcp.tool()
+def start_live_diagnostics(
+    plan: dict[str, Any],
+    plan_hash: str,
+    output_directory: str,
+    capture_id: str,
+) -> dict[str, Any]:
+    """Start a detached live diagnostic capture from an unchanged reviewed plan."""
+    return _service().start_live_diagnostics(
+        plan,
+        plan_hash,
+        output_directory,
+        capture_id,
+    )
+
+
+@mcp.tool()
+def live_diagnostics_status(capture_directory: str) -> dict[str, Any]:
+    """Read durable capture state and detect a lost diagnostic worker."""
+    return _service().live_diagnostics_status(capture_directory)
+
+
+@mcp.tool()
+def live_diagnostics_events(
+    capture_directory: str,
+    after_sequence: int = 0,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """Read ordered live-capture events after the supplied sequence cursor."""
+    return _service().live_diagnostics_events(
+        capture_directory,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def cancel_live_diagnostics(
+    capture_directory: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Request cooperative cancellation of an active live diagnostic capture."""
+    return _service().cancel_live_diagnostics(capture_directory, reason=reason)
+
+
+@mcp.tool()
+def plan_configuration_review(
+    target: dict[str, Any],
+    tuning_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Plan a read-only review and report missing access or tuning inputs."""
+    return _service().plan_configuration_review(target, tuning_inputs)
+
+
+@mcp.tool()
+def collect_configuration_facts(
+    target: dict[str, Any],
+    output_directory: str,
+    review_id: str,
+) -> dict[str, Any]:
+    """Collect the minimal pg_diag item set and extract normalized server facts."""
+    return _service().collect_configuration_facts(target, output_directory, review_id)
+
+
+@mcp.tool()
+def generate_configuration_candidate(
+    facts_path: str,
+    tuning_inputs: dict[str, Any],
+    output_directory: str,
+    review_id: str,
+) -> dict[str, Any]:
+    """Generate a pg_configurator candidate from reviewed host facts and intent."""
+    return _service().generate_configuration_candidate(
+        facts_path, tuning_inputs, output_directory, review_id
+    )
+
+
+@mcp.tool()
+def compare_configuration_candidate(
+    facts_path: str,
+    candidate_path: str,
+    output_directory: str,
+    review_id: str,
+) -> dict[str, Any]:
+    """Write JSON and Markdown tables for settings that differ from the candidate."""
+    return _service().compare_configuration_candidate(
+        facts_path, candidate_path, output_directory, review_id
+    )
+
+
+@mcp.tool()
 def validate_experiment(manifest_path: str) -> dict[str, Any]:
     """Validate an experiment manifest and all non-mutating component inputs."""
     return _service().validate_experiment(manifest_path)
@@ -44,14 +153,52 @@ def plan_experiment(manifest_path: str) -> dict[str, Any]:
 
 @mcp.tool()
 def run_experiment(manifest_path: str, plan_hash: str, run_id: str) -> dict[str, Any]:
-    """Execute an unchanged plan under an explicit immutable run identifier."""
+    """Execute synchronously for compatibility; prefer start_experiment."""
     return _service().run_experiment(manifest_path, plan_hash=plan_hash, run_id=run_id)
 
 
 @mcp.tool()
+def start_experiment(manifest_path: str, plan_hash: str, run_id: str) -> dict[str, Any]:
+    """Start an unchanged plan in a detached durable worker and return immediately."""
+    return _service().start_experiment(manifest_path, plan_hash=plan_hash, run_id=run_id)
+
+
+@mcp.tool()
+def resume_experiment(manifest_path: str, plan_hash: str, run_id: str) -> dict[str, Any]:
+    """Verify artifacts and safely resume a failed, cancelled, or interrupted run."""
+    return _service().resume_experiment(manifest_path, plan_hash=plan_hash, run_id=run_id)
+
+
+@mcp.tool()
 def experiment_status(manifest_path: str, run_id: str) -> dict[str, Any]:
-    """Read the durable state of one experiment run without changing it."""
+    """Read durable state and mark a run interrupted when its worker was lost."""
     return _service().experiment_status(manifest_path, run_id)
+
+
+@mcp.tool()
+def experiment_events(
+    manifest_path: str,
+    run_id: str,
+    after_sequence: int = 0,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """Read ordered append-only run events with cursor-based pagination."""
+    return _service().experiment_events(
+        manifest_path,
+        run_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def cancel_experiment(
+    manifest_path: str,
+    run_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Request cancellation; the worker terminates its owned component and cleans up."""
+    return _service().cancel_experiment(manifest_path, run_id, reason=reason)
 
 
 @mcp.tool()
@@ -131,6 +278,20 @@ def experiment_schema() -> str:
     return path.read_text(encoding="utf-8")
 
 
+@mcp.resource("pgplay://run-state-schema")
+def run_state_schema() -> str:
+    """The durable pg_play/run-state-v2 JSON Schema."""
+    path = files("pg_play").joinpath("schema/run-state-v2.schema.json")
+    return path.read_text(encoding="utf-8")
+
+
+@mcp.resource("pgplay://run-event-schema")
+def run_event_schema() -> str:
+    """The append-only pg_play/run-event-v1 JSON Schema."""
+    path = files("pg_play").joinpath("schema/run-event-v1.schema.json")
+    return path.read_text(encoding="utf-8")
+
+
 @mcp.resource("pgplay://component-contract")
 def component_contract() -> str:
     """Machine envelope fields expected from every component."""
@@ -164,6 +325,13 @@ def component_contract() -> str:
         indent=2,
         sort_keys=True,
     )
+
+
+@mcp.resource("pgplay://configuration-facts-schema")
+def configuration_facts_schema() -> str:
+    """The pg_diag/configuration-facts-v1 JSON Schema."""
+    path = files("pg_diag").joinpath("schema/configuration-facts-v1.schema.json")
+    return path.read_text(encoding="utf-8")
 
 
 def main() -> None:

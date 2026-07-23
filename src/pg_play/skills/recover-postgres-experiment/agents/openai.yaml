@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recover PostgreSQL Experiment"
+  short_description: "Safely recover interrupted pg_play runs"
+  default_prompt: "Use $recover-postgres-experiment to inspect and safely recover this pg_play experiment run."

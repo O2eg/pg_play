@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/O2eg/pg_play/blob/main/src/pg_play/schema/run-event-v1.schema.json",
+  "title": "pg_play append-only run event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sequence", "timestamp", "run_id", "type", "state", "step", "data"],
+  "properties": {
+    "schema_version": {"const": "pg_play/run-event-v1"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "run_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$"},
+    "type": {"type": "string", "minLength": 1},
+    "state": {
+      "enum": ["queued", "running", "cancelling", "interrupted", "succeeded", "partial", "failed", "cancelled", null]
+    },
+    "step": {
+      "enum": ["stand", "benchmark", "prepare-db", "install-workload", "start-workload", "diagnostics", "stop-workload", null]
+    },
+    "data": {"type": "object"}
+  }
+}

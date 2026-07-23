@@ -1,4 +1,4 @@
 interface:
   display_name: "Analyze PostgreSQL Experiment"
-  short_description: "Analyze and compare pg_diag experiment reports"
-  default_prompt: "Use $analyze-postgres-experiment to analyze and compare PostgreSQL experiment reports."
+  short_description: "Analyze diagnostic and benchmark reports"
+  default_prompt: "Use $analyze-postgres-experiment to inspect, compare, or join PostgreSQL experiment reports."

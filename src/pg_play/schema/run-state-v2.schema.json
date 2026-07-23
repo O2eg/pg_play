@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/O2eg/pg_play/blob/main/src/pg_play/schema/run-state-v2.schema.json",
+  "title": "pg_play durable run state v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "run_id",
+    "plan_hash",
+    "manifest_hash",
+    "state",
+    "attempt",
+    "created_at",
+    "updated_at",
+    "worker",
+    "steps",
+    "artifacts",
+    "cancellation",
+    "error"
+  ],
+  "properties": {
+    "schema_version": {"const": "pg_play/run-state-v2"},
+    "experiment_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$"},
+    "plan_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "manifest_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "state": {
+      "enum": ["queued", "running", "cancelling", "interrupted", "succeeded", "partial", "failed", "cancelled"]
+    },
+    "attempt": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "worker": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["pid", "process_start_ticks", "started_at", "mode"],
+          "properties": {
+            "pid": {"type": "integer", "minimum": 1},
+            "process_start_ticks": {"type": ["integer", "null"], "minimum": 0},
+            "started_at": {"type": "string", "format": "date-time"},
+            "mode": {"enum": ["background", "synchronous"]}
+          }
+        }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "attempt", "resume_policy", "artifacts"],
+        "properties": {
+          "name": {
+            "enum": [
+              "stand",
+              "benchmark",
+              "prepare-db",
+              "install-workload",
+              "start-workload",
+              "diagnostics",
+              "stop-workload"
+            ]
+          },
+          "status": {"enum": ["running", "succeeded", "partial", "failed", "cancelled"]},
+          "attempt": {"type": "integer", "minimum": 1},
+          "resume_policy": {
+            "enum": [
+              "reconcile",
+              "idempotent_database_reset",
+              "idempotent_database_prepare",
+              "idempotent_profile_install",
+              "desired_state",
+              "read_only"
+            ]
+          },
+          "artifacts": {"type": "array", "items": {"type": "object"}}
+        }
+      }
+    },
+    "artifacts": {"type": "array", "items": {"type": "object"}},
+    "cancellation": {"type": ["object", "null"]},
+    "error": {"type": ["object", "null"]}
+  }
+}
