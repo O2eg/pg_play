@@ -51,7 +51,7 @@ jobs:
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip install dist/*.whl
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip check
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" capabilities
-          for command in pg-configurator pg-diag pg-perf-bench pg-stand pg-workload; do
+          for command in pg-configurator pg-converter pg-diag pg-perf-bench pg-stand pg-workload; do
             "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/${command}" --version
           done
       - name: Upload distributions for publishing

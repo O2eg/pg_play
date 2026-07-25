@@ -14,6 +14,7 @@ def test_schema_and_agent_skills_are_packaged() -> None:
     assert package.joinpath("skills/run-postgres-experiment/SKILL.md").is_file()
     assert package.joinpath("skills/recover-postgres-experiment/SKILL.md").is_file()
     assert package.joinpath("skills/diagnose-live-postgres/SKILL.md").is_file()
+    assert package.joinpath("skills/run-pg-converter-packet/SKILL.md").is_file()
     assert package.joinpath("skills/review-postgres-configuration/SKILL.md").is_file()
     assert package.joinpath("skills/analyze-postgres-experiment/SKILL.md").is_file()
     assert package.joinpath(
@@ -30,6 +31,7 @@ def test_distribution_metadata_requires_every_orchestrated_component() -> None:
 
     assert {
         "pg-configurator",
+        "pg-converter",
         "pg-diag",
         "pg-perf-bench",
         "pg-stand",
@@ -37,6 +39,7 @@ def test_distribution_metadata_requires_every_orchestrated_component() -> None:
     } <= package_names
     minimum_versions = {
         "pg-configurator": ">=0.9.1",
+        "pg-converter": ">=2.0b2",
         "pg-diag": ">=0.10.4",
         "pg-perf-bench": ">=0.2",
         "pg-stand": ">=0.2.1",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run PG Converter Packet"
+  short_description: "Plan and monitor reviewed database packets"
+  default_prompt: "Use $run-pg-converter-packet to plan, authorize, run, and monitor a reviewed PG Converter packet."

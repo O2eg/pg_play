@@ -25,6 +25,7 @@ EXIT_CODES = {
 }
 COMPONENTS = {
     "pg_configurator",
+    "pg_converter",
     "pg_diag",
     "pg_perf_bench",
     "pg_stand",

@@ -30,6 +30,10 @@ jobs:
           path: .ci-components/pg_configurator
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          repository: O2eg/pg_converter
+          path: .ci-components/pg_converter
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
           repository: O2eg/pg_diag
           path: .ci-components/pg_diag
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -51,6 +55,7 @@ jobs:
         run: |
           python -m pip install \
             --editable .ci-components/pg_configurator \
+            --editable .ci-components/pg_converter \
             --editable .ci-components/pg_diag \
             --editable .ci-components/pg_perf_bench \
             --editable .ci-components/pg_stand \
@@ -71,6 +76,10 @@ jobs:
         with:
           repository: O2eg/pg_configurator
           path: .ci-components/pg_configurator
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: O2eg/pg_converter
+          path: .ci-components/pg_converter
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: O2eg/pg_diag
@@ -99,6 +108,7 @@ jobs:
           python -m venv "${RUNNER_TEMP}/pg-play-wheel-smoke"
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip install \
             --editable .ci-components/pg_configurator \
+            --editable .ci-components/pg_converter \
             --editable .ci-components/pg_diag \
             --editable .ci-components/pg_perf_bench \
             --editable .ci-components/pg_stand \
@@ -107,6 +117,6 @@ jobs:
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip check
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" --version
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" capabilities
-          for command in pg-configurator pg-diag pg-perf-bench pg-stand pg-workload; do
+          for command in pg-configurator pg-converter pg-diag pg-perf-bench pg-stand pg-workload; do
             "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/${command}" --version
           done

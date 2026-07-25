@@ -17,7 +17,9 @@ mcp = FastMCP(
         "Always call validate_experiment and plan_experiment before start_experiment. "
         "Use experiment_status and experiment_events to observe a durable run. "
         "For incidents on existing servers, call plan_live_diagnostics before "
-        "start_live_diagnostics and observe the detached capture through its status and events."
+        "start_live_diagnostics and observe the detached capture through its status and events. "
+        "For pg_converter packets, call plan_converter_run, review its exact targets and "
+        "packet hashes, then call start_converter_run with the unchanged plan hash."
     ),
     json_response=True,
 )
@@ -31,6 +33,73 @@ def _service() -> PgPlayService:
 def component_capabilities(component: str | None = None) -> dict[str, Any]:
     """Return installed component contracts; optionally select one component."""
     return _service().component_capabilities(component)
+
+
+@mcp.tool()
+def plan_converter_run(
+    project_directory: str,
+    config_file: str,
+    packet_name: str,
+    database_selector: str = "ALL",
+    placeholders_file: str | None = None,
+    config_overrides_file: str | None = None,
+    timeout_seconds: float = 3600,
+) -> dict[str, Any]:
+    """Plan an exact sequential pg_converter packet run without connecting."""
+    return _service().plan_converter_run(
+        project_directory,
+        config_file,
+        packet_name,
+        database_selector,
+        placeholders_file,
+        config_overrides_file,
+        timeout_seconds,
+    )
+
+
+@mcp.tool()
+def start_converter_run(
+    plan: dict[str, Any],
+    plan_hash: str,
+    output_directory: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Start a detached pg_converter run from an unchanged reviewed plan."""
+    return _service().start_converter_run(
+        plan,
+        plan_hash,
+        output_directory,
+        run_id,
+    )
+
+
+@mcp.tool()
+def converter_run_status(run_directory: str) -> dict[str, Any]:
+    """Read durable converter state and detect a lost worker."""
+    return _service().converter_run_status(run_directory)
+
+
+@mcp.tool()
+def converter_run_events(
+    run_directory: str,
+    after_sequence: int = 0,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """Read ordered converter-run events after the supplied cursor."""
+    return _service().converter_run_events(
+        run_directory,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def cancel_converter_run(
+    run_directory: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Request cooperative cancellation of an active pg_converter packet run."""
+    return _service().cancel_converter_run(run_directory, reason=reason)
 
 
 @mcp.tool()

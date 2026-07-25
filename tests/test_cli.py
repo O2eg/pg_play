@@ -18,7 +18,7 @@ def test_version_option(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out == "pg-play 0.2.1\n"
+    assert capsys.readouterr().out == "pg-play 0.3.0\n"
 
 
 def test_join_and_teardown_cli_use_explicit_safe_arguments() -> None:
@@ -81,3 +81,45 @@ def test_async_lifecycle_cli_uses_consistent_run_arguments() -> None:
     )
     assert (events.after_sequence, events.limit) == (17, 25)
     assert cancel.reason == "operator request"
+
+
+def test_converter_cli_uses_explicit_plan_and_run_directories() -> None:
+    parser = build_parser()
+    plan = parser.parse_args(
+        [
+            "plan-converter-run",
+            "--project",
+            "/srv/converter",
+            "--config",
+            "/etc/pg_converter.conf",
+            "--packet",
+            "release_42",
+            "--database-selector",
+            "db_a,db_b",
+            "--timeout-seconds",
+            "900",
+        ]
+    )
+    start = parser.parse_args(
+        [
+            "start-converter-run",
+            "plan.json",
+            "--plan-hash",
+            "sha256:plan",
+            "--out",
+            "runs",
+            "--run-id",
+            "release-42",
+        ]
+    )
+
+    assert (plan.packet, plan.database_selector, plan.timeout_seconds) == (
+        "release_42",
+        "db_a,db_b",
+        900,
+    )
+    assert (start.plan, start.plan_hash, start.run_id) == (
+        "plan.json",
+        "sha256:plan",
+        "release-42",
+    )

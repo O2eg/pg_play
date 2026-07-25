@@ -10,6 +10,11 @@ def test_mcp_exposes_only_high_level_typed_operations() -> None:
 
     assert {tool.name for tool in tools} == {
         "component_capabilities",
+        "plan_converter_run",
+        "start_converter_run",
+        "converter_run_status",
+        "converter_run_events",
+        "cancel_converter_run",
         "plan_live_diagnostics",
         "start_live_diagnostics",
         "live_diagnostics_status",

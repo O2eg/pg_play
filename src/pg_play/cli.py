@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from pg_play.service import PgPlayService
 from pg_play.version import __version__
@@ -21,8 +22,57 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities = commands.add_parser("capabilities", help="Show installed component capabilities")
     capabilities.add_argument(
         "--component",
-        choices=("pg_configurator", "pg_stand", "pg_workload", "pg_diag", "pg_perf_bench"),
+        choices=(
+            "pg_configurator",
+            "pg_converter",
+            "pg_stand",
+            "pg_workload",
+            "pg_diag",
+            "pg_perf_bench",
+        ),
     )
+
+    converter_plan = commands.add_parser(
+        "plan-converter-run",
+        help="Plan an exact sequential pg_converter packet run",
+    )
+    converter_plan.add_argument("--project", required=True)
+    converter_plan.add_argument("--config", required=True)
+    converter_plan.add_argument("--packet", required=True)
+    converter_plan.add_argument("--database-selector", default="ALL")
+    converter_plan.add_argument("--placeholders-file")
+    converter_plan.add_argument("--config-overrides-file")
+    converter_plan.add_argument("--timeout-seconds", type=float, default=3600)
+
+    converter_start = commands.add_parser(
+        "start-converter-run",
+        help="Start a reviewed converter plan in a durable worker",
+    )
+    converter_start.add_argument("plan")
+    converter_start.add_argument("--plan-hash", required=True)
+    converter_start.add_argument("--out", required=True)
+    converter_start.add_argument("--run-id", required=True)
+
+    converter_status = commands.add_parser(
+        "converter-run-status",
+        help="Read and reconcile durable converter state",
+    )
+    converter_status.add_argument("run_directory")
+
+    converter_events = commands.add_parser(
+        "converter-run-events",
+        help="Read ordered durable converter events",
+    )
+    converter_events.add_argument("run_directory")
+    converter_events.add_argument("--after-sequence", type=int, default=0)
+    converter_events.add_argument("--limit", type=int, default=1000)
+
+    converter_cancel = commands.add_parser(
+        "cancel-converter-run",
+        help="Request cooperative converter cancellation",
+    )
+    converter_cancel.add_argument("run_directory")
+    converter_cancel.add_argument("--reason")
 
     validate = commands.add_parser("validate", help="Validate an experiment manifest and inputs")
     validate.add_argument("manifest")
@@ -112,6 +162,37 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "capabilities":
             result = service.component_capabilities(args.component)
+        elif args.command == "plan-converter-run":
+            result = service.plan_converter_run(
+                args.project,
+                args.config,
+                args.packet,
+                args.database_selector,
+                args.placeholders_file,
+                args.config_overrides_file,
+                args.timeout_seconds,
+            )
+        elif args.command == "start-converter-run":
+            plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+            result = service.start_converter_run(
+                plan,
+                args.plan_hash,
+                args.out,
+                args.run_id,
+            )
+        elif args.command == "converter-run-status":
+            result = service.converter_run_status(args.run_directory)
+        elif args.command == "converter-run-events":
+            result = service.converter_run_events(
+                args.run_directory,
+                after_sequence=args.after_sequence,
+                limit=args.limit,
+            )
+        elif args.command == "cancel-converter-run":
+            result = service.cancel_converter_run(
+                args.run_directory,
+                reason=args.reason,
+            )
         elif args.command == "validate":
             result = service.validate_experiment(args.manifest)
         elif args.command == "plan":

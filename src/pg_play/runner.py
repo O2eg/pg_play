@@ -18,6 +18,7 @@ from pg_play.state import read_state, utc_now, write_json
 
 EXECUTABLES = {
     "pg_configurator": "pg-configurator",
+    "pg_converter": "pg-converter",
     "pg_diag": "pg-diag",
     "pg_perf_bench": "pg-perf-bench",
     "pg_stand": "pg-stand",

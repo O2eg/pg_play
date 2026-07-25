@@ -34,6 +34,8 @@ from pg_play.configuration_review import (
     plan_configuration_review as build_configuration_review_plan,
 )
 from pg_play.contract import canonical_hash, validate_capabilities
+from pg_play.converter_runs import ConverterRunError, ConverterRunManager
+from pg_play.converter_runs import plan_converter_run as build_converter_run_plan
 from pg_play.live_diagnostics import LiveDiagnosticsError, LiveDiagnosticsManager
 from pg_play.live_diagnostics import plan_live_diagnostics as build_live_diagnostics_plan
 from pg_play.manifest import BenchmarkSpec, ExperimentManifest, load_manifest
@@ -74,6 +76,7 @@ _RESUMABLE_STEP_POLICIES = {
 _REQUIRED_STEP_ARTIFACTS = {"benchmark", "diagnostics"}
 _REQUIRED_COMPONENT_COMMANDS = {
     "pg_configurator": {"capabilities", "generate", "validate-input"},
+    "pg_converter": {"capabilities", "plan", "run"},
     "pg_stand": {"apply", "capabilities", "down", "plan", "status", "up", "validate"},
     "pg_workload": {
         "capabilities",
@@ -133,6 +136,7 @@ class PgPlayService:
             if component is not None
             else [
                 "pg_configurator",
+                "pg_converter",
                 "pg_stand",
                 "pg_workload",
                 "pg_diag",
@@ -156,6 +160,83 @@ class PgPlayService:
                 required_commands=_REQUIRED_COMPONENT_COMMANDS[name],
             )
         return result
+
+    def plan_converter_run(
+        self,
+        project_directory: str | Path,
+        config_file: str,
+        packet_name: str,
+        database_selector: str = "ALL",
+        placeholders_file: str | None = None,
+        config_overrides_file: str | None = None,
+        timeout_seconds: float = 3600,
+    ) -> dict[str, Any]:
+        try:
+            return build_converter_run_plan(
+                self.runner,
+                project_directory=project_directory,
+                config_file=config_file,
+                packet_name=packet_name,
+                database_selector=database_selector,
+                placeholders_file=placeholders_file,
+                config_overrides_file=config_overrides_file,
+                timeout_seconds=timeout_seconds,
+            )
+        except ConverterRunError as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def start_converter_run(
+        self,
+        plan: dict[str, Any],
+        plan_hash: str,
+        output_directory: str | Path,
+        run_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return ConverterRunManager(self.runner).start(
+                plan,
+                plan_hash,
+                output_directory,
+                run_id,
+            )
+        except ConverterRunError as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def converter_run_status(self, run_directory: str | Path) -> dict[str, Any]:
+        try:
+            return ConverterRunManager(self.runner).status(run_directory)
+        except ConverterRunError as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def converter_run_events(
+        self,
+        run_directory: str | Path,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        try:
+            return ConverterRunManager(self.runner).events(
+                run_directory,
+                after_sequence=after_sequence,
+                limit=limit,
+            )
+        except (ConverterRunError, ValueError) as exc:
+            raise OrchestrationError(str(exc)) from exc
+
+    def cancel_converter_run(
+        self,
+        run_directory: str | Path,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return ConverterRunManager(self.runner).cancel(
+                run_directory,
+                reason=reason,
+            )
+        except ConverterRunError as exc:
+            raise OrchestrationError(str(exc)) from exc
 
     @staticmethod
     def plan_live_diagnostics(

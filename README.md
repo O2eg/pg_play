@@ -14,6 +14,8 @@ experiments.
   collection as a successful complete run.
 - Plans and runs `pg_perf_bench` only against an explicitly selected disposable
   database, then validates and compares benchmark artifacts and TPS evidence.
+- Plans and runs reviewed `pg_converter` packets against an exact alias set
+  through a detached, auditable, sequential workflow.
 - Installs every component while preserving their independent use.
 
 The independently installable components are:
@@ -25,7 +27,9 @@ The independently installable components are:
 - [`pg_diag`](https://github.com/O2eg/pg_diag) — diagnostic JSON and HTML
   artifacts;
 - [`pg_configurator`](https://github.com/O2eg/pg_configurator) — version-aware
-  PostgreSQL configuration candidates.
+  PostgreSQL configuration candidates;
+- [`pg_converter`](https://github.com/O2eg/pg_converter) — reviewed SQL/Python
+  packet deployment and migration operations;
 - [`pg_perf_bench`](https://github.com/O2eg/pg_perf_bench) — controlled pgbench
   execution and environment evidence.
 
@@ -43,13 +47,13 @@ The independently installable components are:
           pg_stand ------------------------+
               |
               v
-                    PostgreSQL stand
-                  /          |          \
-                 v           v           v
-          pg_workload  pg_perf_bench   pg_diag
-                 |           |           |
-                 |     benchmark report  |
-                 +--------- run ----------+----> diagnostic report
+                         PostgreSQL stand
+                 /          /      \          \
+                v          v        v          v
+       pg_converter  pg_workload  pg_perf_bench  pg_diag
+                |          |        |             |
+          packet run       |  benchmark report   |
+                +----------+------ run -----------+----> diagnostic report
                                   |
                   change one reviewed input
                                   |
@@ -62,7 +66,7 @@ The control layers are deliberately separate:
 agent skills          workflow and interpretation rules
       |
       v
-pg-play-mcp           twenty-six typed, high-level operations
+pg-play-mcp           thirty-one typed, high-level operations
       |
       v
 pg_play core          validation, planning, state, comparison
@@ -71,6 +75,7 @@ pg_play core          validation, planning, state, comparison
 component adapters    argv arrays + strict JSON envelopes
       |
       +---- pg_configurator
+      +---- pg_converter
       +---- pg_stand
       +---- pg_workload
       +---- pg_diag
@@ -87,7 +92,7 @@ are hidden from its primary help and its normal human output is unchanged.
 python -m pip install pg-play
 ```
 
-This installs compatible versions of all five component distributions. They
+This installs compatible versions of all six component distributions. They
 remain available through their own commands:
 
 ```bash
@@ -95,6 +100,7 @@ pg-stand --help
 pg-workload --help
 pg-diag --help
 pg-configurator --help
+pg-converter --help
 pg-perf-bench --help
 ```
 
@@ -208,7 +214,7 @@ The packaged JSON Schema is available as the MCP resource
 Secrets are the deliberate exception: `pg_workload` continues to accept
 passwords only through environment/passfile mechanisms.
 
-All five components use the same hidden orchestration options:
+All six components use the same hidden orchestration options:
 `--machine`, `--request-id`, and `--component-capabilities`. Their advertised
 `machine_interface` object makes these names machine-verifiable.
 
@@ -219,6 +225,11 @@ The `pg-play` CLI contains only complete experiment operations:
 | Command | Effect |
 | --- | --- |
 | `capabilities` | Read installed component contracts |
+| `plan-converter-run --project DIR --config FILE --packet NAME` | Resolve packet content and exact database aliases without connecting |
+| `start-converter-run PLAN.json --plan-hash HASH --out DIR --run-id ID` | Start an unchanged packet plan in a detached worker |
+| `converter-run-status RUN_DIR` | Read durable packet-run state and detect a lost worker |
+| `converter-run-events RUN_DIR [--after-sequence N]` | Read ordered packet-run events |
+| `cancel-converter-run RUN_DIR [--reason TEXT]` | Request cooperative packet cancellation |
 | `validate MANIFEST` | Validate the manifest and non-mutating component inputs |
 | `plan MANIFEST` | Calculate the current read-only plan and its hash |
 | `start MANIFEST --plan-hash HASH --run-id ID` | Start exactly that plan in a detached worker and return immediately |
@@ -262,6 +273,40 @@ for a verified failed, cancelled, or interrupted attempt; use a new id when the
 manifest or plan changes. `run` retains the old synchronous behavior for
 scripts that explicitly need it.
 
+### Reviewed pg_converter packet runs
+
+`pg_converter` packets are trusted deployment code and are intentionally
+separate from the general experiment manifest. Plan an exact packet, review
+its legacy tracker checksum, SHA-256 source-tree hash, Python-step flag, and
+resolved database aliases and password-free connection identities, then start
+the unchanged plan:
+
+```bash
+pg-play plan-converter-run \
+  --project /opt/pg_converter/current \
+  --config /etc/pg_converter/pg_converter.conf \
+  --packet release_42 \
+  --database-selector 'prod_a,prod_b' \
+  --placeholders-file /run/pg_converter/release_42.json \
+  --timeout-seconds 3600 > converter-plan.json
+
+pg-play start-converter-run converter-plan.json \
+  --plan-hash sha256:... \
+  --out /var/lib/pg_play/converter-runs \
+  --run-id release-42
+```
+
+The machine path always uses sequential database processing and never enables
+`--force`, `--wipe`, `--stop`, `--unlock`, template copying, or skip-on-cancel
+modes. The reviewed plan replaces only the interactive multi-database prompt;
+it does not bypass PG Converter checksum or ambiguous-outcome safeguards.
+Credentials stay in the protected configuration file. Placeholder and
+configuration-override values are accepted only through protected JSON files
+and are represented in the plan by names and hashes, not values.
+See the
+[pg_converter integration runbook](https://github.com/O2eg/pg_play/blob/main/docs/pg_converter-integration.md)
+for the durable directory, cancellation, and recovery contracts.
+
 ## MCP server
 
 Start the stdio server with:
@@ -278,6 +323,11 @@ for concise MCP and Agent Skills configuration examples for Codex CLI, Claude
 Code, Hermes Agent, Kimi Code CLI, Gemini CLI, and OpenCode.
 
 - `component_capabilities`
+- `plan_converter_run`
+- `start_converter_run`
+- `converter_run_status`
+- `converter_run_events`
+- `cancel_converter_run`
 - `plan_live_diagnostics`
 - `start_live_diagnostics`
 - `live_diagnostics_status`
@@ -314,11 +364,20 @@ and intentionally excludes the 2.x prerelease API.
 The durable schemas are also exposed as `pgplay://run-state-schema` and
 `pgplay://run-event-schema`.
 
+For packet deployment, an agent must call `plan_converter_run`, show the exact
+packet/source hashes, target aliases, Python-step risk, and mutation flags to
+the user, and pass the unchanged plan and hash to `start_converter_run`.
+Observe it through `converter_run_status` and `converter_run_events`. A failed
+or interrupted packet is not automatically retried because non-transactional
+actions can have an ambiguous outcome.
+
 ## Agent skills
 
-The wheel contains five optional workflow skills under `pg_play/skills/`:
+The wheel contains six optional workflow skills under `pg_play/skills/`:
 
 - `run-postgres-experiment` — validate, plan, start, and monitor a new run;
+- `run-pg-converter-packet` — review exact packet sources and targets, start
+  the immutable run, and preserve ambiguous outcomes for operator recovery;
 - `recover-postgres-experiment` — inspect, cancel, and safely resume an
   existing durable run;
 - `diagnose-live-postgres` — capture a bounded, read-only diagnostic window on
@@ -431,6 +490,8 @@ unknown step or changed core artifact blocks recovery.
   combined plan hash. `start` and `resume` enforce the same hash. Machine-mode
   `pg_perf_bench benchmark` independently
   verifies a content-sensitive benchmark plan hash before resetting its database.
+- `pg_converter run` independently verifies the reviewed component plan hash,
+  including the exact alias set, packet source tree, and file-based inputs.
 - Subprocesses receive argument arrays with `shell=False`.
 - Password-bearing CLI arguments and password-bearing machine output are
   rejected.
@@ -456,13 +517,15 @@ read-only profiles and one bounded snapshots window per immutable capture id.
 Configuration review extracts the bounded CPU, RAM, filesystem, mount, and disk
 facts listed above. Generation or application of TuneD/systemd artifacts remains
 a roadmap item; it is not silently approximated by the current implementation.
+Reviewed `pg_converter` runs are a separate durable workflow and are not
+silently injected into every experiment manifest.
 
 ## Development
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ../pg_stand -e ../pg_workload -e ../pg_diag \
-  -e ../pg_configurator -e ../pg_perf_bench
+  -e ../pg_configurator -e ../pg_converter -e ../pg_perf_bench
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
@@ -470,8 +533,9 @@ python3 -m venv .venv
 ```
 
 For coordinated releases, publish the component distributions before tagging
-`pg_play`: first `pg_configurator`, `pg_diag`, `pg_stand`, and `pg_workload`,
-then `pg_perf_bench` (which depends on `pg_diag`), and finally `pg_play`.
+`pg_play`: first `pg_configurator`, `pg_converter`, `pg_diag`, `pg_stand`, and
+`pg_workload`, then `pg_perf_bench` (which depends on `pg_diag`), and finally
+`pg_play`.
 Ordinary branch CI checks out the component sources so a coordinated source
 change can be tested before those versions reach PyPI. Tagged publish jobs use
 the package index deliberately and therefore enforce this release order.
