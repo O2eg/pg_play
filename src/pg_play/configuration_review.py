@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import stat
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,22 @@ def _path_status(value: Any, field: str, missing: list[str], errors: list[str]) 
     return str(path)
 
 
+def resolve_ssh_agent_socket() -> Path:
+    raw_path = os.environ.get("SSH_AUTH_SOCK")
+    if not raw_path:
+        raise ConfigurationReviewError(
+            "target.ssh.auth=agent requires SSH_AUTH_SOCK to reference a running agent"
+        )
+    path = Path(raw_path).expanduser()
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        raise ConfigurationReviewError(f"SSH agent socket is not available: {path}") from exc
+    if not stat.S_ISSOCK(mode):
+        raise ConfigurationReviewError(f"SSH_AUTH_SOCK is not a socket: {path}")
+    return path
+
+
 def normalize_review_target(
     target: dict[str, Any],
     *,
@@ -106,6 +123,7 @@ def normalize_review_target(
                     "host",
                     "port",
                     "user",
+                    "auth",
                     "key_path",
                     "known_hosts_path",
                     "connect_timeout",
@@ -138,11 +156,24 @@ def normalize_review_target(
                 f"{normalized_database['passfile']}"
             )
 
-    key_path = (
-        _path_status(ssh.get("key_path"), "target.ssh.key_path", missing, errors)
-        if require_files
-        else str(ssh.get("key_path") or "").strip() or None
-    )
+    auth = str(ssh.get("auth", "key")).strip().lower()
+    if auth not in {"key", "agent"}:
+        errors.append("target.ssh.auth must be one of: agent, key")
+        auth = "key"
+    key_path: str | None = None
+    if auth == "key":
+        key_path = (
+            _path_status(ssh.get("key_path"), "target.ssh.key_path", missing, errors)
+            if require_files
+            else str(ssh.get("key_path") or "").strip() or None
+        )
+    elif ssh.get("key_path") is not None:
+        errors.append("target.ssh.key_path cannot be used with target.ssh.auth=agent")
+    if auth == "agent" and require_files:
+        try:
+            resolve_ssh_agent_socket()
+        except ConfigurationReviewError as exc:
+            errors.append(str(exc))
     known_hosts_value = ssh.get("known_hosts_path", "~/.ssh/known_hosts")
     known_hosts_path = str(Path(str(known_hosts_value)).expanduser().resolve())
     if require_files and not Path(known_hosts_path).is_file():
@@ -151,9 +182,11 @@ def normalize_review_target(
         "host": required_text(ssh, "host", "target.ssh"),
         "port": _port(ssh.get("port"), 22, "target.ssh.port", errors),
         "user": required_text(ssh, "user", "target.ssh"),
-        "key_path": key_path,
+        "auth": auth,
         "known_hosts_path": known_hosts_path,
     }
+    if key_path is not None:
+        normalized_ssh["key_path"] = key_path
     if ssh.get("connect_timeout") is not None:
         try:
             timeout = float(ssh["connect_timeout"])
@@ -164,11 +197,15 @@ def normalize_review_target(
             errors.append("target.ssh.connect_timeout must be a positive number")
     if ssh.get("key_passphrase_env") is not None:
         environment_name = str(ssh["key_passphrase_env"])
-        normalized_ssh["key_passphrase_env"] = environment_name
-        if require_files and environment_name not in os.environ:
-            errors.append(
-                f"target.ssh.key_passphrase_env references an unset variable: {environment_name}"
-            )
+        if auth == "agent":
+            errors.append("target.ssh.key_passphrase_env cannot be used with target.ssh.auth=agent")
+        else:
+            normalized_ssh["key_passphrase_env"] = environment_name
+            if require_files and environment_name not in os.environ:
+                errors.append(
+                    f"target.ssh.key_passphrase_env references an unset variable: "
+                    f"{environment_name}"
+                )
 
     return {"database": normalized_database, "ssh": normalized_ssh}, missing, errors
 

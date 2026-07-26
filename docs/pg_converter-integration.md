@@ -32,7 +32,7 @@ plan_converter_run(
 )
 ```
 
-The operation invokes only the non-connecting `pg_converter --plan` path.
+The operation invokes only the non-connecting `pg-converter --plan` path.
 The result contains:
 
 - `pg_converter/plan-v1` with the exact alias set and password-free connection

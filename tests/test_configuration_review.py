@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -171,6 +172,65 @@ def test_review_plan_reports_only_missing_intent_and_becomes_ready(tmp_path: Pat
     assert ready["collection"]["mode"] == "one-shot"
     assert ready["collection"]["collection_mode"] == "remote"
     assert ready["plan_hash"].startswith("sha256:")
+
+
+def test_configuration_review_accepts_agent_and_passes_socket_to_pg_diag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target(tmp_path)
+    target["ssh"].pop("key_path")
+    target["ssh"]["auth"] = "agent"
+    agent_path = tmp_path / "agent.sock"
+    facts_path = _facts(tmp_path)
+    runner = ReviewRunner(json.loads(facts_path.read_text(encoding="utf-8")))
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as agent:
+        agent.bind(str(agent_path))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(agent_path))
+        plan = plan_configuration_review(target, _tuning())
+        PgPlayService(runner=runner).collect_configuration_facts(  # type: ignore[arg-type]
+            target,
+            tmp_path,
+            "agent-server",
+        )
+
+    assert plan["ready"] is True
+    assert plan["target"]["ssh"]["auth"] == "agent"
+    assert "key_path" not in plan["target"]["ssh"]
+    collection = runner.invocations[0]
+    assert "--ssh-agent" in collection.arguments
+    assert "--ssh-key" not in collection.arguments
+    assert collection.environment == {"SSH_AUTH_SOCK": str(agent_path)}
+
+
+def test_configuration_review_reports_missing_agent_socket(tmp_path: Path, monkeypatch) -> None:
+    target = _target(tmp_path)
+    target["ssh"].pop("key_path")
+    target["ssh"]["auth"] = "agent"
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+
+    plan = plan_configuration_review(target, _tuning())
+
+    assert plan["ready"] is False
+    assert any("SSH_AUTH_SOCK" in error for error in plan["errors"])
+    assert "target.ssh.key_path" not in plan["missing_inputs"]
+
+
+def test_configuration_review_rejects_agent_with_key_options(tmp_path: Path, monkeypatch) -> None:
+    target = _target(tmp_path)
+    target["ssh"]["auth"] = "agent"
+    target["ssh"]["key_passphrase_env"] = "SSH_KEY_PASSPHRASE"
+    agent_path = tmp_path / "agent.sock"
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as agent:
+        agent.bind(str(agent_path))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(agent_path))
+        plan = plan_configuration_review(target, _tuning())
+
+    assert plan["ready"] is False
+    assert any("key_path cannot be used" in error for error in plan["errors"])
+    assert any("key_passphrase_env cannot be used" in error for error in plan["errors"])
 
 
 def test_service_collects_minimal_items_and_generates_candidate(tmp_path: Path) -> None:

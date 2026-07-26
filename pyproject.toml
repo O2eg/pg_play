@@ -30,12 +30,12 @@ classifiers = [
 ]
 dependencies = [
   "mcp>=1.28,<2",
-  "pg-configurator>=0.9.1,<1",
+  "pg-configurator>=0.9.2,<1",
   "pg-converter>=2.0b2,<3",
-  "pg-diag>=0.10.4,<1",
-  "pg-perf-bench>=0.2,<1",
-  "pg-stand>=0.2.1,<1",
-  "pg-workload>=0.3.0,<1",
+  "pg-diag>=0.10.5,<1",
+  "pg-perf-bench>=0.2.1,<1",
+  "pg-stand>=0.2.2,<1",
+  "pg-workload>=0.4.1,<1",
   "PyYAML>=6.0,<7",
 ]
 
@@ -52,7 +52,7 @@ pg-play = "pg_play.cli:main"
 pg-play-mcp = "pg_play.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/O2eg/pg_play"
+Homepage = "https://o2eg.com/"
 Repository = "https://github.com/O2eg/pg_play"
 Issues = "https://github.com/O2eg/pg_play/issues"
 

@@ -27,6 +27,7 @@ from pg_play.configuration_review import (
     build_configurator_inputs,
     compare_configuration,
     normalize_review_target,
+    resolve_ssh_agent_socket,
     validate_configuration_candidate,
     write_comparison_artifacts,
 )
@@ -352,8 +353,6 @@ class PgPlayService:
             str(ssh["port"]),
             "--ssh-user",
             ssh["user"],
-            "--ssh-key",
-            ssh["key_path"],
             "--ssh-known-hosts",
             ssh["known_hosts_path"],
             "--item-id=[" + ",".join(CONFIGURATION_ITEM_IDS) + "]",
@@ -363,23 +362,29 @@ class PgPlayService:
             str(report_path),
             "--output-format=json",
         ]
+        if ssh["auth"] == "agent":
+            arguments.append("--ssh-agent")
+        else:
+            arguments.extend(("--ssh-key", ssh["key_path"]))
         if database.get("passfile"):
             arguments.extend(("--passfile", database["passfile"]))
         if ssh.get("connect_timeout") is not None:
             arguments.extend(("--ssh-connect-timeout", str(ssh["connect_timeout"])))
         if ssh.get("key_passphrase_env"):
             arguments.extend(("--ssh-key-passphrase-env", ssh["key_passphrase_env"]))
-        environment = None
+        environment: dict[str, str] = {}
+        if ssh["auth"] == "agent":
+            environment["SSH_AUTH_SOCK"] = str(resolve_ssh_agent_socket())
         if ssh.get("key_passphrase_env"):
             environment_name = ssh["key_passphrase_env"]
-            environment = {environment_name: os.environ[environment_name]}
+            environment[environment_name] = os.environ[environment_name]
 
         collection = self._require(
             self._invoke(
                 "pg_diag",
                 tuple(arguments),
                 request_id=f"configuration-review-{review_id}-collect",
-                environment=environment,
+                environment=environment or None,
                 timeout_seconds=120,
                 cancellable=False,
             ),

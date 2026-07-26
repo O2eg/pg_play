@@ -12,21 +12,23 @@ This workflow is read-only on the target.
 ## Gather inputs
 
 1. Call `plan_configuration_review` with all known values.
-2. Ask only for fields returned in `missing_inputs`. An SSH key alone is not a
-   PostgreSQL connection; obtain the database endpoint, database, user, and an
-   existing passfile when authentication requires one.
-3. Pass SSH and database credentials only by local path or environment-variable
-   reference. Never request or transmit key contents or passwords.
+2. Ask only for fields returned in `missing_inputs`. SSH authentication alone
+   is not a PostgreSQL connection; obtain the database endpoint, database,
+   user, and an existing passfile when authentication requires one.
+3. Select exactly one SSH mode: `ssh.auth=key` with a key-path reference, or
+   `ssh.auth=agent` with a live inherited `SSH_AUTH_SOCK`. Keep a strict
+   known-hosts path in both modes. Never request or transmit key contents or
+   passwords, and never start an agent or load a key on the user's behalf.
 4. Require the user to choose database duty, storage class, desired replication
    mode, and PITR intent. Do not infer operational intent from current settings.
-5. Resolve every plan error, including missing key or known-hosts files, before
-   collection.
+5. Resolve every plan error, including a missing key, unavailable agent socket,
+   or missing known-hosts file, before collection.
 
 ## Collect and calculate
 
 1. Call `collect_configuration_facts` with a unique `review_id` and dedicated
    output directory. It collects the versioned minimal item set with one
-   `pg_diag one-shot` run.
+   `pg-diag one-shot` run.
 2. Check `facts.collection.usable`, missing and failed item ids, PostgreSQL
    major, CPU cores, RAM bytes, settings, and installed extensions. Stop when
    critical facts are unavailable; do not substitute guesses.

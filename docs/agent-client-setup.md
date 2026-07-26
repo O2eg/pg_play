@@ -150,5 +150,8 @@ tuning inputs. Use detached start operations and monitor status and events.
 ```
 
 `pg-play-mcp` currently uses stdio only. The client must therefore run on a host
-where the executable, Docker access, SSH keys, manifests, and report paths are
-available. A hosted agent needs a separately secured remote MCP transport.
+where the executable, Docker access, SSH identities, manifests, and report
+paths are available. When `target.ssh.auth` is `agent`, start the MCP server
+from an environment with a live `SSH_AUTH_SOCK`; detached diagnostic workers
+inherit that socket path, so the agent must outlive the capture. A hosted agent
+needs a separately secured remote MCP transport.

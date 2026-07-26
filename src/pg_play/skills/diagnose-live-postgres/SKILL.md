@@ -1,6 +1,6 @@
 ---
 name: diagnose-live-postgres
-description: Plan, start, monitor, cancel, and interpret a bounded read-only pg_diag snapshots capture on an existing PostgreSQL host. Use when a user reports a live performance incident such as a slow server, blocking or lock contention, high CPU, memory pressure, WAL or checkpoint pressure, storage latency, or unexplained throughput degradation and can provide PostgreSQL plus SSH access by local file or environment reference. Do not use this skill to run arbitrary SQL or shell commands, change configuration, terminate database sessions, or restart services.
+description: Plan, start, monitor, cancel, and interpret a bounded read-only pg-diag snapshots capture on an existing PostgreSQL host. Use when a user reports a live performance incident such as a slow server, blocking or lock contention, high CPU, memory pressure, WAL or checkpoint pressure, storage latency, or unexplained throughput degradation and can provide PostgreSQL plus SSH access by local file or environment reference. Do not use this skill to run arbitrary SQL or shell commands, change configuration, terminate database sessions, or restart services.
 ---
 
 # Diagnose Live PostgreSQL
@@ -13,10 +13,12 @@ Use only `plan_live_diagnostics`, `start_live_diagnostics`,
 
 1. Call `plan_live_diagnostics` with all known target fields. Ask only for
    `missing_inputs` and resolve every plan error. Pass credentials only as a
-   passfile path, SSH key path, known-hosts path, or key-passphrase environment
-   variable name. Never request passwords or private-key contents. Treat the
-   database host as the endpoint visible from the SSH target, matching
-   `pg_diag` remote-mode semantics.
+   passfile path, strict known-hosts path, and either `ssh.auth=key` with an SSH
+   key path or `ssh.auth=agent` with a live inherited `SSH_AUTH_SOCK`. A
+   key-passphrase environment variable is valid only in key mode. Never
+   request passwords or private-key contents. Treat the database host as the
+   endpoint visible from the SSH target, matching `pg-diag` remote-mode
+   semantics.
 2. Select one intent:
    - `performance` for an unclear or mixed slowdown;
    - `locks` for blocked sessions, long transactions, or deadlocks;
@@ -34,6 +36,8 @@ Use only `plan_live_diagnostics`, `start_live_diagnostics`,
 
 1. Choose a unique `capture_id` and a dedicated output directory. Call
    `start_live_diagnostics` with the exact returned plan and `plan_hash`.
+   In agent mode, verify that the same agent socket will remain alive for the
+   complete detached capture; the plan deliberately does not persist its path.
 2. Save the returned capture directory. Poll `live_diagnostics_status` and page
    through `live_diagnostics_events` using `last_sequence` as the next
    `after_sequence` cursor.

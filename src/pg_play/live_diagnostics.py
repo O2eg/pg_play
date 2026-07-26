@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pg_play.configuration_review import ConfigurationReviewError, normalize_review_target
+from pg_play.configuration_review import (
+    ConfigurationReviewError,
+    normalize_review_target,
+    resolve_ssh_agent_socket,
+)
 from pg_play.contract import canonical_hash
 from pg_play.runner import (
     ComponentCancelledError,
@@ -545,6 +549,7 @@ class LiveDiagnosticsManager:
     ) -> ComponentInvocation:
         database = plan["target"]["database"]
         ssh = plan["target"]["ssh"]
+        ssh_auth = ssh.get("auth", "key")
         capture = plan["capture"]
         arguments = [
             "snapshots",
@@ -564,8 +569,6 @@ class LiveDiagnosticsManager:
             str(ssh["port"]),
             "--ssh-user",
             ssh["user"],
-            "--ssh-key",
-            ssh["key_path"],
             "--ssh-known-hosts",
             ssh["known_hosts_path"],
             "--duration-seconds",
@@ -581,20 +584,26 @@ class LiveDiagnosticsManager:
             str(html_path),
             "--output-format=[json,html]",
         ]
+        if ssh_auth == "agent":
+            arguments.append("--ssh-agent")
+        else:
+            arguments.extend(("--ssh-key", ssh["key_path"]))
         if database.get("passfile"):
             arguments.extend(("--passfile", database["passfile"]))
         if ssh.get("connect_timeout") is not None:
             arguments.extend(("--ssh-connect-timeout", str(ssh["connect_timeout"])))
-        environment = None
+        environment: dict[str, str] = {}
+        if ssh_auth == "agent":
+            environment["SSH_AUTH_SOCK"] = str(resolve_ssh_agent_socket())
         if ssh.get("key_passphrase_env"):
             name = ssh["key_passphrase_env"]
             arguments.extend(("--ssh-key-passphrase-env", name))
-            environment = {name: os.environ[name]}
+            environment[name] = os.environ[name]
         return ComponentInvocation(
             component="pg_diag",
             arguments=tuple(arguments),
             request_id=f"live-diagnostics-{context.capture_id}-collect",
-            environment=environment,
+            environment=environment or None,
             timeout_seconds=float(capture["duration_seconds"]) + 300,
             cancel_path=context.cancel_path,
             active_process_path=context.active_process_path,
@@ -649,13 +658,17 @@ class LiveDiagnosticsManager:
             os.fchmod(descriptor, 0o600)
             worker_log = os.fdopen(descriptor, "ab")
             descriptor = None
+            worker_environment = os.environ.copy()
+            plan = read_state(context.plan_path)
+            if plan["target"]["ssh"].get("auth", "key") == "agent":
+                worker_environment["SSH_AUTH_SOCK"] = str(resolve_ssh_agent_socket())
             with worker_log:
                 process = subprocess.Popen(
                     command,
                     stdin=subprocess.DEVNULL,
                     stdout=worker_log,
                     stderr=subprocess.STDOUT,
-                    env=os.environ.copy(),
+                    env=worker_environment,
                     start_new_session=True,
                     close_fds=True,
                 )

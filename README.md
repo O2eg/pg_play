@@ -1,7 +1,10 @@
-# pg_play
+# pg-play
 
-`pg_play` is the AI-ready orchestration layer for reproducible PostgreSQL
+`pg-play` is the AI-ready orchestration layer for reproducible PostgreSQL
 experiments.
+
+The distribution and primary installed command are `pg-play`; the MCP command
+is `pg-play-mcp`. The import package and GitHub repository are named `pg_play`.
 
 - Recreates the same PostgreSQL stand, backend activity, and diagnostic window.
 - Applies a versioned `pg_configurator` candidate only through a reviewed
@@ -208,9 +211,9 @@ The packaged JSON Schema is available as the MCP resource
 
 `pg_diag` naming is the reference for equivalent options. Components now use
 `--host`, `--port`, `--database`, `--user`, `--password`, `--out`, and
-`--pg-version` wherever those concepts apply. Existing `pg_perf_bench --pg-*`,
-`pg_workload --pg-major`/`--workload-user`, `pg_stand --postgres-version`, and
-`pg_configurator --output-file-name` spellings remain compatibility aliases.
+`--pg-version` wherever those concepts apply. Existing `pg-perf-bench --pg-*`,
+`pg-workload --pg-major`/`--workload-user`, `pg-stand --postgres-version`, and
+`pg-configurator --output-file-name` spellings remain compatibility aliases.
 Secrets are the deliberate exception: `pg_workload` continues to accept
 passwords only through environment/passfile mechanisms.
 
@@ -401,8 +404,50 @@ safety limits, and a content hash without connecting to the target. Passwords,
 private-key contents, arbitrary SQL, shell commands, tags, and caller-selected
 item ids are not accepted.
 
+SSH authentication is selected explicitly in `target.ssh`. Existing key-path
+requests remain valid and are normalized to `auth: "key"`:
+
+```json
+{
+  "ssh": {
+    "host": "db.example",
+    "user": "postgres",
+    "auth": "key",
+    "key_path": "/secure/path/id_ed25519",
+    "known_hosts_path": "/secure/path/known_hosts"
+  }
+}
+```
+
+To use a key already loaded into a local agent, set `auth: "agent"` and omit
+`key_path` and `key_passphrase_env`:
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+ssh-add -l
+```
+
+```json
+{
+  "ssh": {
+    "host": "db.example",
+    "user": "postgres",
+    "auth": "agent",
+    "known_hosts_path": "/secure/path/known_hosts"
+  }
+}
+```
+
+Agent plans contain only the authentication method, not the ephemeral socket
+path. Planning and starting require a live Unix socket in `SSH_AUTH_SOCK`.
+The detached diagnostics worker explicitly inherits that variable and passes
+it to `pg-diag`; the same agent and socket must therefore remain alive until
+the capture reaches a terminal state. `pg-play` never starts an agent, runs
+`ssh-add`, or forwards the agent to the target.
+
 `start_live_diagnostics` stores the unchanged plan in a new immutable capture
-directory and starts a detached worker. The worker invokes `pg_diag snapshots`
+directory and starts a detached worker. The worker invokes `pg-diag snapshots`
 in full remote mode, writes portable JSON and HTML, validates the JSON artifact,
 and records ordered events and terminal state. MCP disconnection does not stop
 the worker. Use `live_diagnostics_status` and `live_diagnostics_events` to
@@ -418,7 +463,7 @@ id rather than a misleading resume or merge.
 `pg_play` exposes a deliberately read-only review workflow for an existing
 PostgreSQL server. `plan_configuration_review` reports missing database, SSH,
 and tuning-intent inputs. `collect_configuration_facts` runs one bounded
-`pg_diag one-shot` collection containing only server version, effective
+`pg-diag one-shot` collection containing only server version, effective
 `pg_settings`, database size, CPU, RAM, filesystem, mount, disk, and extension
 inventory items. It stores both the original diagnostic report and a compact
 `pg_diag/configuration-facts-v1` artifact.
@@ -432,10 +477,10 @@ pending-restart state, calculation rule, and warnings.
 
 The workflow never applies configuration, reloads PostgreSQL, restarts a
 service, or treats a candidate as a benchmark-proven optimum. During collection,
-`pg_diag` remote mode opens a bounded dynamic local SSH forward to the requested
+`pg-diag` remote mode opens a bounded dynamic local SSH forward to the requested
 PostgreSQL endpoint and closes it with the collection session. Passwords and
-private-key contents are not accepted; callers provide passfile, key, and strict
-known-hosts paths.
+private-key contents are not accepted; callers provide a passfile reference,
+strict known-hosts path, and either a key-path reference or explicit agent mode.
 
 ## Recovery model
 
@@ -486,11 +531,11 @@ unknown step or changed core artifact blocks recovery.
 - Managed TLS stands are rejected during validation in `pg_play/v1`: the
   component contract does not yet provision a client certificate for the
   dedicated workload role. Direct TLS use of each component remains available.
-- `pg_stand apply` verifies its component plan hash; `pg_play run` verifies the
+- `pg-stand apply` verifies its component plan hash; `pg-play run` verifies the
   combined plan hash. `start` and `resume` enforce the same hash. Machine-mode
-  `pg_perf_bench benchmark` independently
+  `pg-perf-bench benchmark` independently
   verifies a content-sensitive benchmark plan hash before resetting its database.
-- `pg_converter run` independently verifies the reviewed component plan hash,
+- `pg-converter run` independently verifies the reviewed component plan hash,
   including the exact alias set, packet source tree, and file-based inputs.
 - Subprocesses receive argument arrays with `shell=False`.
 - Password-bearing CLI arguments and password-bearing machine output are

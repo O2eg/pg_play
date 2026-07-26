@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,36 @@ def test_capture_executes_exact_profile_and_validates_report(
     ]
 
 
+def test_agent_capture_invokes_pg_diag_without_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target(tmp_path)
+    target["ssh"].pop("key_path")
+    target["ssh"]["auth"] = "agent"
+    agent_path = tmp_path / "agent.sock"
+    runner = CaptureRunner()
+    manager = LiveDiagnosticsManager(runner=runner)  # type: ignore[arg-type]
+
+    def keep_queued(context: Any, state: dict[str, Any]) -> dict[str, Any]:
+        write_state(context.state_path, state)
+        return state
+
+    monkeypatch.setattr(manager, "_spawn_worker", keep_queued)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as agent:
+        agent.bind(str(agent_path))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(agent_path))
+        plan = plan_live_diagnostics(target, "locks", 30, 5)
+        state = manager.start(plan, plan["plan_hash"], tmp_path / "captures", "agent-capture")
+        result = manager.execute(state["capture_directory"])
+
+    assert result["state"] == "succeeded"
+    collection = runner.invocations[0]
+    assert "--ssh-agent" in collection.arguments
+    assert "--ssh-key" not in collection.arguments
+    assert collection.environment == {"SSH_AUTH_SOCK": str(agent_path)}
+
+
 def test_cancellation_is_durable_and_component_cooperative(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -309,3 +340,42 @@ def test_start_detaches_worker_with_reviewed_plan_hash(
     assert launched["command"][launched["command"].index("--plan-hash") + 1] == plan["plan_hash"]
     assert launched["kwargs"]["start_new_session"] is True
     assert not (tmp_path / "captures" / "cpu-incident" / "worker.starting").exists()
+
+
+def test_detached_agent_worker_inherits_ssh_auth_sock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target(tmp_path)
+    target["ssh"].pop("key_path")
+    target["ssh"]["auth"] = "agent"
+    agent_path = tmp_path / "agent.sock"
+    launched: dict[str, Any] = {}
+
+    class FakeProcess:
+        pid = 4243
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def fake_popen(command: list[str], **kwargs: Any) -> FakeProcess:
+        launched["command"] = command
+        launched["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("pg_play.live_diagnostics.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pg_play.live_diagnostics.process_start_ticks", lambda _pid: 100)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as agent:
+        agent.bind(str(agent_path))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(agent_path))
+        plan = plan_live_diagnostics(target, "cpu", 30, 5)
+        state = LiveDiagnosticsManager().start(
+            plan,
+            plan["plan_hash"],
+            tmp_path / "captures",
+            "agent-incident",
+        )
+
+    assert state["state"] == "queued"
+    assert launched["kwargs"]["env"]["SSH_AUTH_SOCK"] == str(agent_path)
