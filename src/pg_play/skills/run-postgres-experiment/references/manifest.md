@@ -43,6 +43,8 @@ spec:
     duration_seconds: 60
     interval_seconds: 10
     report_name: pg18-mixed-diagnostics
+    # log_depth_time_min: 15         # optional: server csvlog for the last N
+                                     # minutes (0-1440); needs local or remote
   benchmark:                         # optional
     database: pg_perf_bench_test
     report_name: pg18-mixed-benchmark
@@ -65,6 +67,9 @@ manifest directory and must not depend on the agent process working directory.
 Keep secrets out of YAML. `db_cpu`, `db_ram`, and the stand PostgreSQL major
 must describe the same target. Use `remote` collection when container OS
 evidence is required; use `remote-db-only` for database-only collection.
+`log_depth_time_min` adds the pg_diag `server_log` section for the last N
+minutes of csvlog; it is rejected with `remote-db-only`, which never reaches
+the server log directory.
 The resource guard remains enabled; any threshold override is hashed into the
 experiment plan.
 

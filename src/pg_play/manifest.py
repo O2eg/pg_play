@@ -54,6 +54,7 @@ class DiagnosticSpec:
     duration_seconds: float
     interval_seconds: float
     report_name: str
+    log_depth_time_min: int | None
 
 
 @dataclass(frozen=True)
@@ -315,7 +316,14 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
     diagnostics_raw = _mapping(
         spec.get("diagnostics", {}),
         "spec.diagnostics",
-        {"mode", "collection_mode", "duration_seconds", "interval_seconds", "report_name"},
+        {
+            "mode",
+            "collection_mode",
+            "duration_seconds",
+            "interval_seconds",
+            "report_name",
+            "log_depth_time_min",
+        },
     )
     mode = _text(diagnostics_raw.get("mode", "snapshots"), "spec.diagnostics.mode")
     if mode not in {"one-shot", "snapshots"}:
@@ -348,6 +356,16 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
             diagnostics_raw.get("report_name", "report"),
             "spec.diagnostics.report_name",
         ),
+        log_depth_time_min=(
+            _integer(
+                diagnostics_raw["log_depth_time_min"],
+                "spec.diagnostics.log_depth_time_min",
+                minimum=0,
+                maximum=1440,
+            )
+            if diagnostics_raw.get("log_depth_time_min") is not None
+            else None
+        ),
     )
     if diagnostics.mode == "snapshots":
         window_error = validate_snapshots_window(
@@ -356,6 +374,14 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
         )
         if window_error is not None:
             raise ManifestError(window_error)
+    if diagnostics.log_depth_time_min and diagnostics.collection_mode == "remote-db-only":
+        # pg_diag reads csvlog files from the server host, which remote-db-only
+        # never touches; it would skip the section and the requested evidence
+        # would silently be missing from the reviewed plan.
+        raise ManifestError(
+            "spec.diagnostics.log_depth_time_min needs collection_mode local or remote: "
+            "remote-db-only has no access to the server log directory"
+        )
     if not _PROFILE_RE.fullmatch(diagnostics.report_name):
         raise ManifestError(f"spec.diagnostics.report_name must match {_PROFILE_RE.pattern}")
 

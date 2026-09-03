@@ -152,6 +152,10 @@ spec:
     duration_seconds: 60
     interval_seconds: 10
     report_name: pg18-mixed-diagnostics
+    # log_depth_time_min: 15         # optional: parse server csvlog for the
+                                     # last N minutes (0-1440); needs
+                                     # collection_mode local or remote, since
+                                     # remote-db-only never reaches the log dir
   benchmark:                         # optional
     database: pg_perf_bench_test     # dedicated and disposable
     report_name: pg18-mixed-benchmark
@@ -470,7 +474,9 @@ inventory items. It stores both the original diagnostic report and a compact
 
 `generate_configuration_candidate` combines those observed facts with the
 explicit database duty, storage class, replication mode, and PITR intent. The
-result remains a `pg_configurator/v1` candidate. Finally,
+result is a `pg_configurator/v1` or `pg_configurator/v2` candidate; the two
+differ in how the candidate reports its own findings, not in the parameter
+mappings this workflow reads. Finally,
 `compare_configuration_candidate` writes JSON and Markdown containing only
 changed or unobserved parameters, including current source, apply mode,
 pending-restart state, calculation rule, and warnings.
@@ -520,9 +526,16 @@ unknown step or changed core artifact blocks recovery.
 
 ## Determinism and safety
 
-- Every component returns the exact `pg_play/component/v1` envelope in hidden
-  machine mode and advertises `pg_play/capabilities/v1` through the common
-  `--component-capabilities` flag.
+- Every component returns an exact component envelope in hidden machine mode
+  and advertises `pg_play/capabilities/v1` through the common
+  `--component-capabilities` flag. Two envelope versions are accepted while the
+  components migrate: `pg_play/component/v1` carries `warnings`, a list of
+  sentences, and `pg_play/component/v2` carries `advisories`, objects with a
+  stable `code`, a `severity` of `warning`, `assumption` or `info`, and the
+  `setting` each one is about. Neither may carry the other's field. Anything
+  read through `envelope_advisories` arrives in the v2 shape either way; a v1
+  sentence becomes a `warning` with a null `code`, because that is all v1 can
+  express.
 - Plans hash normalized configuration, workload profile contents, scheduler
   state, and current stand state.
 - Parameters owned by stand topology, TLS, fixed CSV logging, or diagnostic

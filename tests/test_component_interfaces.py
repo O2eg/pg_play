@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pg_play.contract import SUPPORTED_CONTRACT_VERSIONS
 from pg_play.service import PgPlayService
 
 
@@ -20,7 +21,7 @@ def test_installed_components_share_the_pg_play_capability_contract() -> None:
     for component, document in capabilities.items():
         assert document["component"] == component
         assert document["capability_schema_version"] == "pg_play/capabilities/v1"
-        assert document["contract_version"] == "pg_play/component/v1"
+        assert document["contract_version"] in SUPPORTED_CONTRACT_VERSIONS
         assert document["machine_interface"] == {
             "machine_flag": "--machine",
             "request_id_option": "--request-id",

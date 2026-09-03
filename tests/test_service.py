@@ -4,11 +4,13 @@ import json
 import os
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pg_stand.config import load_config
 
+from pg_play.manifest import load_manifest
 from pg_play.runner import ComponentInvocation, process_start_ticks
 from pg_play.service import OrchestrationError, PgPlayService
 from pg_play.state import RUN_STATE_SCHEMA_VERSION, read_events, write_state
@@ -118,7 +120,13 @@ class FakeRunner:
         return _envelope(invocation, result={"valid": True})
 
 
-def _manifest(tmp_path: Path, *, benchmark: bool = False, benchmark_profile: bool = False) -> Path:
+def _manifest(
+    tmp_path: Path,
+    *,
+    benchmark: bool = False,
+    benchmark_profile: bool = False,
+    diagnostics: str = "",
+) -> Path:
     workload = tmp_path / "workload"
     workload.mkdir()
     path = tmp_path / "experiment.yaml"
@@ -166,7 +174,7 @@ spec:
     mode: snapshots
     duration_seconds: 60
     interval_seconds: 10
-{benchmark_section}
+{diagnostics}{benchmark_section}
 """,
         encoding="utf-8",
     )
@@ -348,6 +356,31 @@ def test_validation_rejects_managed_tls_before_invoking_components(tmp_path: Pat
         PgPlayService(runner=runner).validate_experiment(manifest)  # type: ignore[arg-type]
 
     assert runner.invocations == []
+
+
+def test_diagnostics_pass_the_requested_log_depth_to_pg_diag(tmp_path: Path) -> None:
+    connection = {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "database": "postgres",
+        "admin_user": "postgres",
+        "passfile": tmp_path / "pgpass",
+    }
+    # Only the TLS switch is read on the local-collection path.
+    config = SimpleNamespace(postgres=SimpleNamespace(tls=SimpleNamespace(enabled=False)))
+    with_logs = load_manifest(
+        _manifest(tmp_path, diagnostics="    collection_mode: local\n    log_depth_time_min: 15\n")
+    )
+    args = PgPlayService._diagnostic_args(with_logs, config, connection, tmp_path / "run")
+    assert args[0] == "snapshots"
+    assert args[args.index("--log-depth-time-min") + 1] == "15"
+
+    without = tmp_path / "without"
+    without.mkdir()
+    silent = load_manifest(_manifest(without))
+    assert "--log-depth-time-min" not in PgPlayService._diagnostic_args(
+        silent, config, connection, without / "run"
+    )
 
 
 def test_configurator_literals_are_normalized_for_pg_stand() -> None:

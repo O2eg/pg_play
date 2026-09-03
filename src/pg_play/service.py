@@ -34,7 +34,7 @@ from pg_play.configuration_review import (
 from pg_play.configuration_review import (
     plan_configuration_review as build_configuration_review_plan,
 )
-from pg_play.contract import canonical_hash, validate_capabilities
+from pg_play.contract import canonical_hash, envelope_messages, validate_capabilities
 from pg_play.converter_runs import ConverterRunError, ConverterRunManager
 from pg_play.converter_runs import plan_converter_run as build_converter_run_plan
 from pg_play.live_diagnostics import LiveDiagnosticsError, LiveDiagnosticsManager
@@ -453,7 +453,7 @@ class PgPlayService:
             "inputs": inputs,
             "derived_inputs": context["derived_inputs"],
             "resource_overrides": context["resource_overrides"],
-            "warnings": envelope.get("warnings") or [],
+            "warnings": envelope_messages(envelope),
         }
 
     @staticmethod
@@ -735,16 +735,23 @@ class PgPlayService:
         }
         if len(workload_versions) != 1:
             raise OrchestrationError("pg_workload version changed while building the plan")
+        # Components are migrating to the v2 envelope one at a time, so what
+        # arrives is a mix of sentences and structured advisories.
+        # envelope_messages flattens both into the sentences this plan carries.
         warnings = sorted(
             {
-                *config_envelope.get("warnings", []),
-                *stand_envelope.get("warnings", []),
-                *prepare_plan.get("warnings", []),
-                *install_plan.get("warnings", []),
-                *scheduler_plan.get("warnings", []),
-                *diagnostic_plan.get("warnings", []),
-                *benchmark_validation.get("warnings", []),
-                *(benchmark_plan.get("warnings", []) if benchmark_plan else []),
+                message
+                for envelope in (
+                    config_envelope,
+                    stand_envelope,
+                    prepare_plan,
+                    install_plan,
+                    scheduler_plan,
+                    diagnostic_plan,
+                    benchmark_validation,
+                    *((benchmark_plan,) if benchmark_plan else ()),
+                )
+                for message in envelope_messages(envelope)
             }
         )
         if stand_managed_parameters:
@@ -782,7 +789,14 @@ class PgPlayService:
                 "install": self._compact_workload_plan(install_plan["result"]),
                 "scheduler": self._compact_workload_plan(scheduler_plan["result"]),
             },
-            "diagnostics": diagnostic_plan["result"],
+            "diagnostics": (
+                {
+                    **diagnostic_plan["result"],
+                    "log_depth_time_min": manifest.diagnostics.log_depth_time_min,
+                }
+                if manifest.diagnostics.log_depth_time_min is not None
+                else diagnostic_plan["result"]
+            ),
             "benchmark": benchmark_plan["result"] if benchmark_plan is not None else None,
             "warnings": warnings,
         }
@@ -2470,6 +2484,8 @@ class PgPlayService:
                     str(manifest.diagnostics.interval_seconds),
                 ]
             )
+        if manifest.diagnostics.log_depth_time_min:
+            args.extend(["--log-depth-time-min", str(manifest.diagnostics.log_depth_time_min)])
         if manifest.diagnostics.collection_mode == "remote":
             paths = credential_paths(config.project_directory)
             known_hosts = run_directory / "ssh-known-hosts"
@@ -2597,6 +2613,6 @@ class PgPlayService:
             "status": envelope["status"],
             "component_status": envelope["status"],
             "artifacts": envelope.get("artifacts") or [],
-            "warnings": envelope.get("warnings") or [],
+            "warnings": envelope_messages(envelope),
             "error": envelope.get("error"),
         }

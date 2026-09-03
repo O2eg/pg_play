@@ -17,7 +17,7 @@ from pg_diag.configuration_facts import (
     load_configuration_facts,
 )
 
-from pg_play.contract import canonical_hash
+from pg_play.contract import canonical_hash, envelope_messages
 from pg_play.state import write_json, write_text
 
 REVIEW_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -363,9 +363,20 @@ def _values_equal(current: dict[str, Any], candidate: Any) -> bool:
     return _normalized_text(current.get("value")) == _normalized_text(candidate)
 
 
+# v2 renamed the artifact's `warnings` to `advisories` and gave each one a
+# severity; the parameter mappings this module reads are unchanged, so both are
+# accepted and the findings are read through envelope_messages.
+CONFIGURATOR_ARTIFACT_SCHEMAS = ("pg_configurator/v1", "pg_configurator/v2")
+
+
 def validate_configuration_candidate(candidate: Any) -> dict[str, Any]:
-    if not isinstance(candidate, dict) or candidate.get("schema_version") != "pg_configurator/v1":
-        raise ConfigurationReviewError("candidate must be a pg_configurator/v1 artifact")
+    if (
+        not isinstance(candidate, dict)
+        or candidate.get("schema_version") not in CONFIGURATOR_ARTIFACT_SCHEMAS
+    ):
+        raise ConfigurationReviewError(
+            "candidate must be a {} artifact".format(" or ".join(CONFIGURATOR_ARTIFACT_SCHEMAS))
+        )
     claimed_hash = candidate.get("artifact_hash")
     if not isinstance(claimed_hash, str) or claimed_hash != configurator_artifact_hash(candidate):
         raise ConfigurationReviewError("pg_configurator candidate hash does not match its content")
@@ -450,7 +461,7 @@ def compare_configuration(
             "unchanged_parameter_count": unchanged,
             "apply_mode_counts": dict(sorted(action_counts.items())),
         },
-        "warnings": list(candidate.get("warnings") or []),
+        "warnings": envelope_messages(candidate),
     }
     result["comparison_hash"] = canonical_hash(result)
     return result

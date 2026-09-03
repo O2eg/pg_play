@@ -56,6 +56,68 @@ def test_manifest_resolves_paths_and_has_stable_hash(tmp_path: Path) -> None:
     assert first.document_hash == second.document_hash
 
 
+def test_manifest_parses_log_depth_time_min(tmp_path: Path) -> None:
+    path = _write_manifest(
+        tmp_path,
+        """  diagnostics:
+    mode: snapshots
+    collection_mode: remote
+    duration_seconds: 60
+    interval_seconds: 10
+    log_depth_time_min: 30
+""",
+    )
+    manifest = load_manifest(path)
+    assert manifest.diagnostics.log_depth_time_min == 30
+
+    second = tmp_path / "second"
+    second.mkdir()
+    default = _write_manifest(
+        second,
+        """  diagnostics:
+    mode: one-shot
+""",
+    )
+    assert load_manifest(default).diagnostics.log_depth_time_min is None
+
+
+def test_manifest_rejects_log_depth_out_of_range(tmp_path: Path) -> None:
+    path = _write_manifest(
+        tmp_path,
+        """  diagnostics:
+    mode: one-shot
+    log_depth_time_min: 1441
+""",
+    )
+    with pytest.raises(ManifestError, match="log_depth_time_min"):
+        load_manifest(path)
+
+
+def test_manifest_rejects_log_depth_without_log_access(tmp_path: Path) -> None:
+    # remote-db-only never reaches the server host, so pg_diag would skip the
+    # log section and the plan would promise evidence that cannot arrive.
+    path = _write_manifest(
+        tmp_path,
+        """  diagnostics:
+    mode: one-shot
+    log_depth_time_min: 15
+""",
+    )
+    with pytest.raises(ManifestError, match="needs collection_mode local or remote"):
+        load_manifest(path)
+
+    zero = tmp_path / "zero"
+    zero.mkdir()
+    disabled = _write_manifest(
+        zero,
+        """  diagnostics:
+    mode: one-shot
+    log_depth_time_min: 0
+""",
+    )
+    assert load_manifest(disabled).diagnostics.log_depth_time_min == 0
+
+
 def test_manifest_rejects_invalid_snapshot_window(tmp_path: Path) -> None:
     path = _write_manifest(
         tmp_path,

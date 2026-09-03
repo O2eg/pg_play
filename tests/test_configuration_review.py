@@ -362,6 +362,52 @@ def test_comparison_normalizes_postgresql_time_units(tmp_path: Path) -> None:
     }
 
 
+def test_a_v2_candidate_is_read_and_its_advisories_become_comparison_warnings(
+    tmp_path: Path,
+) -> None:
+    # v2 renamed the artifact's `warnings` to `advisories` and gave each one a
+    # severity. The parameter mappings this workflow reads did not change, so a
+    # v2 candidate is compared exactly like a v1 one, and its findings reach the
+    # comparison as the sentences the report has room for.
+    candidate = {
+        "schema_version": "pg_configurator/v2",
+        "parameters": {"shared_buffers": {"raw_value": 268435456}},
+        "postgresql_conf": {"shared_buffers": "256MB"},
+        "advisories": [
+            {
+                "code": "shared_buffers_crowds_os_cache",
+                "severity": "warning",
+                "setting": "shared_buffers",
+                "actual": "256MB",
+                "message": "shared_buffers leaves little operating-system cache.",
+            }
+        ],
+    }
+    candidate["artifact_hash"] = configurator_artifact_hash(candidate)
+    candidate_path = tmp_path / "v2-candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+    comparison = compare_configuration(_facts(tmp_path), candidate_path)
+
+    assert comparison["candidate_hash"] == candidate["artifact_hash"]
+    assert comparison["warnings"] == ["shared_buffers leaves little operating-system cache."]
+
+
+def test_a_candidate_from_an_unknown_schema_is_refused(tmp_path: Path) -> None:
+    candidate = {
+        "schema_version": "pg_configurator/preview-v1",
+        "parameters": {"shared_buffers": {"raw_value": 268435456}},
+        "postgresql_conf": {"shared_buffers": "256MB"},
+        "advisories": [],
+    }
+    candidate["artifact_hash"] = configurator_artifact_hash(candidate)
+    candidate_path = tmp_path / "preview-candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+    with pytest.raises(ConfigurationReviewError, match="candidate must be a"):
+        compare_configuration(_facts(tmp_path), candidate_path)
+
+
 def test_comparison_rejects_tampered_candidate_hash(tmp_path: Path) -> None:
     candidate = {
         "schema_version": "pg_configurator/v1",

@@ -8,6 +8,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from pg_play.contract import ADVISORY_SEVERITIES, SUPPORTED_CONTRACT_VERSIONS
 from pg_play.service import PgPlayService
 
 mcp = FastMCP(
@@ -364,9 +365,20 @@ def run_event_schema() -> str:
 @mcp.resource("pgplay://component-contract")
 def component_contract() -> str:
     """Machine envelope fields expected from every component."""
+    common_fields = [
+        "contract_version",
+        "component",
+        "component_version",
+        "command",
+        "request_id",
+        "status",
+        "result",
+        "artifacts",
+        "error",
+    ]
     return json.dumps(
         {
-            "contract_version": "pg_play/component/v1",
+            "contract_versions": list(SUPPORTED_CONTRACT_VERSIONS),
             "capability_schema_version": "pg_play/capabilities/v1",
             "capability_command_fields": [
                 "mutates_target",
@@ -378,18 +390,14 @@ def component_contract() -> str:
                 "request_id_option": "--request-id",
                 "capabilities_option": "--component-capabilities",
             },
-            "required_fields": [
-                "contract_version",
-                "component",
-                "component_version",
-                "command",
-                "request_id",
-                "status",
-                "result",
-                "artifacts",
-                "warnings",
-                "error",
-            ],
+            # The versions differ in one field. v1 reports `warnings`, a list of
+            # sentences; v2 reports `advisories`, objects with a stable code, a
+            # severity of warning/assumption/info, and the setting each is about.
+            "required_fields": {
+                "pg_play/component/v1": sorted([*common_fields, "warnings"]),
+                "pg_play/component/v2": sorted([*common_fields, "advisories"]),
+            },
+            "advisory_severities": list(ADVISORY_SEVERITIES),
         },
         indent=2,
         sort_keys=True,

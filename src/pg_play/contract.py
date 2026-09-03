@@ -6,7 +6,15 @@ import hashlib
 import json
 from typing import Any
 
+# Two component contracts are live. They differ in one field: v1 reports
+# `warnings`, a list of sentences, and v2 reports `advisories`, a list of
+# objects carrying a stable code, a severity and the setting each one is about.
+# Components migrate one at a time, so both are accepted and `envelope_advisories`
+# below gives a caller one shape to work with either way.
 CONTRACT_VERSION = "pg_play/component/v1"
+CONTRACT_VERSION_V2 = "pg_play/component/v2"
+SUPPORTED_CONTRACT_VERSIONS = (CONTRACT_VERSION, CONTRACT_VERSION_V2)
+ADVISORY_SEVERITIES = ("warning", "assumption", "info")
 CAPABILITY_SCHEMA_VERSION = "pg_play/capabilities/v1"
 MACHINE_INTERFACE = {
     "machine_flag": "--machine",
@@ -58,6 +66,10 @@ def canonical_hash(value: Any) -> str:
 def validate_envelope(value: Any, *, expected_component: str | None = None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContractError("component response must be a JSON object")
+    contract_version = value.get("contract_version")
+    if contract_version not in SUPPORTED_CONTRACT_VERSIONS:
+        raise ContractError(f"unsupported component contract: {contract_version!r}")
+    findings_field = "advisories" if contract_version == CONTRACT_VERSION_V2 else "warnings"
     required = {
         "contract_version",
         "component",
@@ -67,15 +79,13 @@ def validate_envelope(value: Any, *, expected_component: str | None = None) -> d
         "status",
         "result",
         "artifacts",
-        "warnings",
+        findings_field,
         "error",
     }
     if set(value) != required:
         missing = sorted(required.difference(value))
         extra = sorted(set(value).difference(required))
         raise ContractError(f"invalid component envelope fields: missing={missing}, extra={extra}")
-    if value["contract_version"] != CONTRACT_VERSION:
-        raise ContractError(f"unsupported component contract: {value['contract_version']!r}")
     component = value["component"]
     if component not in COMPONENTS:
         raise ContractError(f"unknown component in envelope: {component!r}")
@@ -93,10 +103,13 @@ def validate_envelope(value: Any, *, expected_component: str | None = None) -> d
         isinstance(artifact, dict) for artifact in value["artifacts"]
     ):
         raise ContractError("component artifacts must be a list of objects")
-    if not isinstance(value["warnings"], list) or not all(
-        isinstance(warning, str) for warning in value["warnings"]
-    ):
-        raise ContractError("component warnings must be a list of strings")
+    if findings_field == "warnings":
+        if not isinstance(value["warnings"], list) or not all(
+            isinstance(warning, str) for warning in value["warnings"]
+        ):
+            raise ContractError("component warnings must be a list of strings")
+    else:
+        _validate_advisories(value["advisories"])
     if value["error"] is not None and not isinstance(value["error"], dict):
         raise ContractError("component error must be an object or null")
     if isinstance(value["error"], dict) and not {
@@ -105,6 +118,52 @@ def validate_envelope(value: Any, *, expected_component: str | None = None) -> d
     }.issubset(value["error"]):
         raise ContractError("component error must contain code and message")
     return value
+
+
+def _validate_advisories(advisories: Any) -> None:
+    if not isinstance(advisories, list):
+        raise ContractError("component advisories must be a list of objects")
+    for advisory in advisories:
+        if not isinstance(advisory, dict):
+            raise ContractError("component advisories must be a list of objects")
+        missing = sorted({"code", "severity", "setting", "actual", "message"}.difference(advisory))
+        if missing:
+            raise ContractError(f"component advisory missing fields: {missing}")
+        if advisory["severity"] not in ADVISORY_SEVERITIES:
+            raise ContractError(f"unknown advisory severity: {advisory['severity']!r}")
+        for field in ("code", "message"):
+            if not isinstance(advisory[field], str) or not advisory[field]:
+                raise ContractError(f"component advisory {field} must be a non-empty string")
+        for field in ("setting", "actual"):
+            if advisory[field] is not None and not isinstance(advisory[field], str):
+                raise ContractError(f"component advisory {field} must be a string or null")
+
+
+def envelope_advisories(envelope: dict[str, Any]) -> list[dict[str, Any]]:
+    """The findings in an envelope, in the v2 shape whichever version sent it.
+
+    A v1 component reports sentences with no severity and no stable identifier,
+    so each one is lifted to `severity: "warning"`: that is the only thing v1
+    can express, and pretending to know more would be an invention. `code` stays
+    None, which is how a caller tells a lifted line from a real advisory.
+    """
+    if "advisories" in envelope:
+        return [dict(advisory) for advisory in envelope["advisories"]]
+    return [
+        {
+            "code": None,
+            "severity": "warning",
+            "setting": None,
+            "actual": None,
+            "message": message,
+        }
+        for message in envelope.get("warnings") or []
+    ]
+
+
+def envelope_messages(envelope: dict[str, Any]) -> list[str]:
+    """Just the sentences, for a report that has no room for the structure."""
+    return [advisory["message"] for advisory in envelope_advisories(envelope)]
 
 
 def validate_capabilities(
@@ -132,7 +191,7 @@ def validate_capabilities(
         raise ContractError(
             f"unsupported capability schema: {value['capability_schema_version']!r}"
         )
-    if value["contract_version"] != CONTRACT_VERSION:
+    if value["contract_version"] not in SUPPORTED_CONTRACT_VERSIONS:
         raise ContractError(f"unsupported component contract: {value['contract_version']!r}")
     if value["component"] != expected_component:
         raise ContractError(

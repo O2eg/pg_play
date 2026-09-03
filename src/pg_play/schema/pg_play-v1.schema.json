@@ -77,7 +77,8 @@
             "collection_mode": {"enum": ["remote-db-only", "local", "remote"]},
             "duration_seconds": {"type": "number", "minimum": 30, "maximum": 86400},
             "interval_seconds": {"type": "number", "minimum": 5, "maximum": 600},
-            "report_name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"}
+            "report_name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+            "log_depth_time_min": {"type": "integer", "minimum": 0, "maximum": 1440}
           },
           "allOf": [
             {
@@ -89,6 +90,16 @@
                     {"required": ["interval_seconds"]}
                   ]
                 }
+              }
+            },
+            {
+              "if": {
+                "properties": {"log_depth_time_min": {"minimum": 1}},
+                "required": ["log_depth_time_min"]
+              },
+              "then": {
+                "properties": {"collection_mode": {"enum": ["local", "remote"]}},
+                "required": ["collection_mode"]
               }
             }
           ]
