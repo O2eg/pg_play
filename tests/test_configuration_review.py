@@ -11,6 +11,7 @@ from pg_diag.configuration_facts import configuration_facts_hash
 
 from pg_play.configuration_review import (
     ConfigurationReviewError,
+    build_configurator_inputs,
     compare_configuration,
     plan_configuration_review,
 )
@@ -233,6 +234,57 @@ def test_configuration_review_rejects_agent_with_key_options(tmp_path: Path, mon
     assert any("key_passphrase_env cannot be used" in error for error in plan["errors"])
 
 
+def test_candidate_sizes_from_effective_capacity_when_a_cgroup_limit_applies(
+    tmp_path: Path,
+) -> None:
+    facts_path = _facts(tmp_path)
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    facts["host"]["cgroup"] = {
+        "scope": "postmaster",
+        "cgroup_count": 1,
+        "ambiguous": False,
+        "applied": True,
+    }
+    facts["host"]["effective_cpu_cores"] = 2
+    facts["host"]["effective_ram_bytes"] = 4 * 1024**3
+    facts["facts_hash"] = configuration_facts_hash(facts)
+    facts_path.write_text(json.dumps(facts), encoding="utf-8")
+
+    inputs, context = build_configurator_inputs(facts_path, _tuning())
+
+    # the container limit, not the 8-core / 16 GiB host, sizes the candidate
+    assert inputs["db_cpu"] == 2
+    assert inputs["db_ram"] == f"{4 * 1024**3}B"
+    assert context["capacity_source"] == "cgroup limit"
+
+
+def test_ambiguous_cgroups_require_explicit_capacity(tmp_path: Path) -> None:
+    facts_path = _facts(tmp_path)
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    facts["host"]["cgroup"] = {
+        "scope": "postmaster",
+        "cgroup_count": 2,
+        "ambiguous": True,
+        "applied": False,
+    }
+    facts["host"]["effective_cpu_cores"] = None
+    facts["host"]["effective_ram_bytes"] = None
+    facts["facts_hash"] = configuration_facts_hash(facts)
+    facts_path.write_text(json.dumps(facts), encoding="utf-8")
+
+    # host capacity is never a substitute for the unknown container limit
+    with pytest.raises(ConfigurationReviewError, match="db_cpu and db_ram explicitly"):
+        build_configurator_inputs(facts_path, _tuning())
+
+    inputs, context = build_configurator_inputs(
+        facts_path, {**_tuning(), "db_cpu": 2, "db_ram": "4GB"}
+    )
+    assert inputs["db_cpu"] == 2
+    assert inputs["db_ram"] == "4GB"
+    assert context["capacity_source"].startswith("explicit")
+    assert "db_cpu" not in context["derived_inputs"]
+
+
 def test_service_collects_minimal_items_and_generates_candidate(tmp_path: Path) -> None:
     facts_path = _facts(tmp_path)
     facts = json.loads(facts_path.read_text(encoding="utf-8"))
@@ -255,6 +307,35 @@ def test_service_collects_minimal_items_and_generates_candidate(tmp_path: Path) 
     assert candidate["inputs"]["pg_version"] == "18"
     assert candidate["inputs"]["available_extensions"] == "pg_stat_statements,pg_wait_sampling"
     assert Path(candidate["candidate_path"]).is_file()
+
+
+@pytest.mark.parametrize(
+    "preload_value",
+    [
+        "auto_explain, pg_stat_statements, auto_explain",
+        '"$libdir/auto_explain", pg_stat_statements',
+        "/usr/lib/postgresql/18/lib/auto_explain.so, pg_stat_statements",
+    ],
+)
+def test_loaded_modules_allow_real_candidate_generation(tmp_path: Path, preload_value: str) -> None:
+    facts_path = _facts(tmp_path)
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    # auto_explain is loaded but has no entry in pg_available_extensions.
+    facts["postgresql"]["settings"]["shared_preload_libraries"] = {
+        "value": preload_value,
+    }
+    facts["facts_hash"] = configuration_facts_hash(facts)
+    facts_path.write_text(json.dumps(facts), encoding="utf-8")
+
+    result = PgPlayService().generate_configuration_candidate(
+        facts_path, _tuning(), tmp_path, "loaded-modules"
+    )
+
+    assert result["inputs"]["available_extensions"] == (
+        "auto_explain,pg_stat_statements,pg_wait_sampling"
+    )
+    candidate = json.loads(Path(result["candidate_path"]).read_text(encoding="utf-8"))
+    assert "auto_explain" in candidate["postgresql_conf"]["shared_preload_libraries"]
 
 
 def test_comparison_contains_only_changed_parameters_and_writes_tables(tmp_path: Path) -> None:

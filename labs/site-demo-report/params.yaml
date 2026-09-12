@@ -1,0 +1,87 @@
+# Parameters of the public pg_diag sample report "site-demo-5m-30s" (report_trace lab, 2026-09-12).
+# run_report.py reads this file; --root/--tag/--duration/--interval/--warmup override the values below.
+root: ../../../report_trace                 # lab root (relative to this directory: the report_trace checkout next to pg_play); --root or $SITE_DEMO_ROOT override
+tag: site-demo-5m-30s                       # run id (experiments/<tag>), pg_diag report_name and public file stem
+
+stand:
+  config: stand/configs/trace.yaml          # pg_stand config (relative to root); copy in setup/stand-trace.yaml
+  project: stand
+  configurator_parameters: setup/configurator-parameters.json   # postgres parameters applied by pg_stand
+  primary_port: 55540                       # primary published port on 127.0.0.1 (SSH 56540, root, key stand/.pg_stand/credentials/ssh/pg_stand_test)
+  primary_container: pg-trace-20260905-primary-pg-stand-managed
+  psql_binary: /usr/lib/postgresql/18/bin/psql
+
+workload:
+  project: workload                         # pg_workload project (relative to root)
+  database: workload_trace
+  user: trace_workload
+  scale: 3.0                                # data profiles installed at this scale (imdb 957 MB, simple_stock 770 MB, db 3.3 GB)
+  install: false                            # data are prepared once by prepare_stand.py
+  profiles: [bloat_vacuum, emulate_errors, imdb, jsonb_docs, many_objects, pagila, partition_aging,
+             pss_overflow, queue_skip_locked, simple_stock]   # simple_stock_spec_symbols deliberately disabled
+  resource_guard:
+    disk_max_used_pct: 96
+    mem_min_available_pct: 15
+    mem_min_available_mb: 6144
+    cpu_max_pct: 80
+    cpu_window_seconds: 30
+    check_interval: 5
+
+configurator_inputs:                        # primary is 2 CPU / 4 GiB (cgroup), PG 18, mixed duty
+  db_cpu: 2
+  db_ram: 4Gi
+  pg_version: "18"
+  db_duty: mixed
+  db_disk_type: SSD
+  min_conns: 96
+  max_conns: 96
+  wal_disk_budget: 1Gi
+  peak_wal_rate: 1Mi
+  replica_outage_tolerance: 120
+  max_autovac_workers: 3
+  min_autovac_workers: 3
+
+diagnostics:
+  mode: snapshots
+  collection_mode: remote                   # pg_diag over SSH into the primary container
+  duration_seconds: 300
+  interval_seconds: 30                      # 11 snapshots
+  log_depth_time_min: 8                     # covers warm-up + staged activity + window
+  warmup_seconds: 180                       # same workload before the window, then a clean pg_play start
+  pre_start_seconds: 85                     # idle REPEATABLE READ transaction opens this long before pg_play starts
+  ops_lead_seconds: 20                      # slow CREATE INDEX / COPY / VACUUM and the lock chain start this long before pg_play
+
+staged_activity:                            # real sessions only, see progress.py and events.py
+  index_rows: 24000                         # CPU-bound CREATE INDEX (~3-12 ms/row on 2 cores) must outlive the point-in-time collection
+  copy_rows: 5000
+  lock_hold_seconds: 150                    # row lock on lab.orders id=1 with three waiters (lock_timeout=0, no auto_explain)
+  events_cycle_pause_seconds: 35            # deadlocks, lock waits, 57014, 28P01, 58P01, 53300 (every third cycle), archiver failure, CHECKPOINT
+  events_extra_seconds: 150                 # events helper lifetime = duration + this
+
+stand_run_settings:                         # ALTER SYSTEM for the whole run, restored to the previous values afterwards
+  statement_timeout: 120s                   # lab default is 15s (postgresql.auto.conf); waiters and slow maintenance need more
+  temp_file_limit: 2GB                      # lab default 128MB; imdb analytics spill more than that
+
+demo_grants:                                # real ACL drift for object_workload.extension_objects_acl_drift (idempotent)
+  - grant select on public.pg_stat_statements to lab_analyst
+
+publish:                                    # finalize.py: anonymized copies in experiments/<tag>/public/
+  replacements:
+    runtime.collector_host: pg-diag-collector
+    runtime.collector_user: dba
+    content.content_path: /opt/pg_diag/content
+  hardware_id_columns: [serial, uuid, nqn, wwid, partuuid, ptuuid]   # os.lshw_* identifiers of the developer host
+  leak_patterns: [oleg, ROG-Strix, /home/]
+  playwright_python: ../../../pg_configurator/.venv/bin/python   # venv with playwright + chromium for browser_audit.py (relative to this directory; the lab venv is used when it has playwright)
+
+guards:
+  min_free_gib: 12                          # cancel the run below this free space on the lab root filesystem
+  max_runtime_extra_seconds: 420            # cancel if pg_play runs longer than duration + this
+  helper_grace_seconds: 90
+
+expected:                                   # sanity thresholds for the summary (2026-09-12 run: 271 ok / 46 empty / 4 unsupported / 0 error)
+  items: 321
+  ok_min: 260
+  error_max: 0
+  snapshots: 11
+  plans_min: 800

@@ -453,6 +453,7 @@ class PgPlayService:
             "inputs": inputs,
             "derived_inputs": context["derived_inputs"],
             "resource_overrides": context["resource_overrides"],
+            "capacity_source": context.get("capacity_source", "host"),
             "warnings": envelope_messages(envelope),
         }
 

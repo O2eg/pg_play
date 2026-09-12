@@ -578,6 +578,15 @@ a roadmap item; it is not silently approximated by the current implementation.
 Reviewed `pg_converter` runs are a separate durable workflow and are not
 silently injected into every experiment manifest.
 
+## Labs
+
+`labs/` holds reproducible end-to-end scenarios that drive real stands through pg_play. They are
+tracked in Git and excluded from both the wheel and source distribution; use a repository checkout
+to run them. `labs/site-demo-report/` rebuilds the public pg_diag sample report (a
+5-minute snapshot window over ten pg_workload profiles with staged incidents on the
+`pg-trace` stand, then anonymized and audited) with one command; see its README for the
+parameters and the expected result.
+
 ## Development
 
 ```bash

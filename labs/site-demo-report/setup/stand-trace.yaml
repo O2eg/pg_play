@@ -1,0 +1,96 @@
+api_version: pg_stand/v1
+kind: PostgreSQLStand
+metadata:
+  name: pg-trace-20260905
+spec:
+  postgres:
+    version: 18
+    superuser: postgres
+    initdb_args: --data-checksums --auth-host=scram-sha-256
+    tls:
+      enabled: false
+    parameters:
+      max_connections: 100
+      shared_buffers: 256MB
+      superuser_reserved_connections: 8
+      reserved_connections: 2
+      auto_explain.sample_rate: 1
+      auto_explain.log_min_duration: 100ms
+      auto_explain.log_format: json
+      auto_explain.log_nested_statements: 'on'
+      auto_explain.log_analyze: 'on'
+      auto_explain.log_timing: 'on'
+      auto_explain.log_buffers: 'on'
+      auto_explain.log_wal: 'on'
+      auto_explain.log_settings: 'on'
+      auto_explain.log_parameter_max_length: 0
+      log_min_duration_statement: 100ms
+      log_statement_sample_rate: 1
+      log_min_duration_sample: -1
+      log_autovacuum_min_duration: 0
+      log_temp_files: 0
+      log_lock_waits: 'on'
+      log_connections: 'on'
+      log_disconnections: 'on'
+      deadlock_timeout: 100ms
+      lc_messages: C
+      temp_file_limit: 128MB
+      statement_timeout: 15s
+      idle_in_transaction_session_timeout: 60s
+      max_slot_wal_keep_size: 512MB
+      pg_wait_sampling.profile_period: 10
+      pg_wait_sampling.history_period: 10
+  topology:
+    mode: primary_standby_logical
+    replication:
+      mode: sync
+      username: replicator
+      application_name: pg_stand_sync_physical
+      max_wal_senders: 10
+      max_replication_slots: 10
+      wal_keep_size: 256MB
+      wal_keep_segments: 64
+      hot_standby_feedback: true
+    logical_replication:
+      publication_name: pg_stand_all_tables
+      subscription_name: pg_stand_all_tables_sub
+      slot_name: pg_stand_all_tables_slot
+      copy_data: true
+  docker:
+    pull_policy: missing
+    network_name: pg-trace-20260905-network-pg-stand-managed
+    labels:
+      io.pg-stand.profile: primary-standby-sync-logical
+  storage:
+    root_directory: .pg_stand/pg-trace-20260905
+  nodes:
+    primary:
+      container_name: pg-trace-20260905-primary-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55540
+      ssh_published_port: 56540
+      pgbouncer_session_published_port: 57540
+      pgbouncer_transaction_published_port: 58540
+      shm_size: 1g
+      cpu_limit: 2.0
+      memory_limit: 4g
+    standby:
+      container_name: pg-trace-20260905-standby-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55541
+      ssh_published_port: 56541
+      pgbouncer_session_published_port: 57541
+      pgbouncer_transaction_published_port: 58541
+      shm_size: 1g
+      cpu_limit: 0.5
+      memory_limit: 2g
+    logical:
+      container_name: pg-trace-20260905-logical-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55542
+      ssh_published_port: 56542
+      pgbouncer_session_published_port: 57542
+      pgbouncer_transaction_published_port: 58542
+      shm_size: 1g
+      cpu_limit: 0.5
+      memory_limit: 2g

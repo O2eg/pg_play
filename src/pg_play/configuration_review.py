@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
@@ -267,34 +268,58 @@ def build_configurator_inputs(
     if missing:
         raise ConfigurationReviewError("missing tuning inputs: " + ", ".join(missing))
 
-    cpu_cores = facts["host"].get("cpu_cores")
-    ram_bytes = facts["host"].get("ram_bytes")
+    host = facts["host"]
+    # effective_* is host capacity capped by an unambiguous cgroup limit (pg_diag >= 0.16.3):
+    # null there means the capacity is unknown (several PostgreSQL cgroups on the host) and
+    # must be given explicitly. Older facts files carry only the host values.
+    legacy_facts = "effective_cpu_cores" not in host
+    cpu_cores = host.get("cpu_cores") if legacy_facts else host.get("effective_cpu_cores")
+    ram_bytes = host.get("ram_bytes") if legacy_facts else host.get("effective_ram_bytes")
+    cgroup = host.get("cgroup") or {}
+    if cgroup.get("ambiguous"):
+        capacity_source = "explicit (several PostgreSQL cgroups with different limits)"
+    elif cgroup.get("applied"):
+        capacity_source = "cgroup limit"
+    else:
+        capacity_source = "host"
     pg_major = facts["postgresql"].get("major")
     unavailable = [
         name
-        for name, value in (
-            ("cpu_cores", cpu_cores),
-            ("ram_bytes", ram_bytes),
-            ("pg_version", pg_major),
+        for name, value, explicit in (
+            ("cpu_cores", cpu_cores, "db_cpu"),
+            ("ram_bytes", ram_bytes, "db_ram"),
+            ("pg_version", pg_major, "pg_version"),
         )
-        if value is None
+        if value is None and tuning.get(explicit) is None
     ]
     if unavailable:
+        detail = ""
+        if cgroup.get("ambiguous"):
+            detail = (
+                " (several PostgreSQL postmasters run in different cgroups, so the database's "
+                "CPU/RAM limit is unknown; pass db_cpu and db_ram explicitly)"
+            )
         raise ConfigurationReviewError(
-            "configuration facts lack required values: " + ", ".join(unavailable)
+            "configuration facts lack required values: " + ", ".join(unavailable) + detail
         )
-    derived: dict[str, Any] = {
-        "db_cpu": cpu_cores,
-        "db_ram": f"{ram_bytes}B",
-        "pg_version": pg_major,
-        "platform": "LINUX",
-    }
+    derived: dict[str, Any] = {"pg_version": pg_major, "platform": "LINUX"}
+    if cpu_cores is not None:
+        derived["db_cpu"] = cpu_cores
+    if ram_bytes is not None:
+        derived["db_ram"] = f"{ram_bytes}B"
     database_size = facts["postgresql"].get("database_size_bytes")
     if database_size is not None:
         derived["db_size"] = f"{database_size}B"
-    extensions = facts["postgresql"].get("available_extensions") or []
+    extensions = set(facts["postgresql"].get("available_extensions") or [])
+    # Loaded modules such as auto_explain need not have SQL extension control files.
+    preload = facts["postgresql"]["settings"].get("shared_preload_libraries", {}).get("value")
+    if isinstance(preload, str):
+        for library in next(csv.reader([preload], skipinitialspace=True)):
+            name = library.strip().rsplit("/", 1)[-1].removesuffix(".so")
+            if name:
+                extensions.add(name)
     if extensions:
-        derived["available_extensions"] = ",".join(extensions)
+        derived["available_extensions"] = ",".join(sorted(extensions))
 
     overrides = {
         name: {"derived": derived[name], "requested": value}
@@ -302,7 +327,12 @@ def build_configurator_inputs(
         if name in derived and value != derived[name]
     }
     inputs = {**derived, **tuning}
-    return inputs, {"facts": facts, "derived_inputs": derived, "resource_overrides": overrides}
+    return inputs, {
+        "facts": facts,
+        "derived_inputs": derived,
+        "resource_overrides": overrides,
+        "capacity_source": capacity_source,
+    }
 
 
 def _normalized_text(value: Any) -> str:
