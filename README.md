@@ -96,7 +96,7 @@ python -m pip install pg-play
 ```
 
 This installs compatible versions of all six component distributions. The minimum
-versions are `pg-configurator>=0.11.1`, `pg-diag>=0.18.3`, `pg-stand>=0.2.4`,
+versions are `pg-configurator>=0.11.1`, `pg-diag>=0.18.4`, `pg-stand>=0.2.4`,
 `pg-workload>=0.6.1`, `pg-perf-bench>=0.7.4`, and `pg-converter>=2.0b2`.
 Newer compatible versions are allowed; the major-version bounds are declared in
 `pyproject.toml`. To update an existing installation and its components together:
