@@ -4,6 +4,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+import yaml
 
 from pg_play.manifest import ManifestError, load_manifest
 
@@ -54,6 +55,25 @@ def test_manifest_resolves_paths_and_has_stable_hash(tmp_path: Path) -> None:
     assert first.stand_project == tmp_path.resolve()
     assert first.workload.resource_guard.disk_max_used_pct == 90
     assert first.document_hash == second.document_hash
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        [],
+        {"wal_level": "logical"},
+        {"shared_buffers": "1GB\nfsync=off"},
+        {"auto_explain.log_format": {"value": "json"}},
+        {"bad-name": "on"},
+    ],
+)
+def test_stand_parameter_overrides_reuse_stand_validation(tmp_path: Path, overrides) -> None:
+    path = _write_manifest(tmp_path)
+    document = yaml.safe_load(path.read_text())
+    document["spec"]["stand"]["parameter_overrides"] = overrides
+    path.write_text(yaml.safe_dump(document))
+    with pytest.raises(ManifestError, match="parameter_overrides"):
+        load_manifest(path)
 
 
 def test_manifest_parses_log_depth_time_min(tmp_path: Path) -> None:

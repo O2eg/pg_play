@@ -14,6 +14,10 @@ spec:
   stand:
     config: ../pg_stand/configs/single.yaml
     project: ./stand
+    # Optional values applied after pg_configurator, included in the plan hash:
+    # parameter_overrides:
+    #   auto_explain.log_min_duration: 0ms
+    #   auto_explain.log_format: json
   configurator:
     inputs:
       db_cpu: "4"

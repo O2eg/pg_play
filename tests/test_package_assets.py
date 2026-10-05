@@ -38,12 +38,12 @@ def test_distribution_metadata_requires_every_orchestrated_component() -> None:
         "pg-workload",
     } <= package_names
     minimum_versions = {
-        "pg-configurator": ">=0.11.0",
+        "pg-configurator": ">=0.11.1",
         "pg-converter": ">=2.0b2",
-        "pg-diag": ">=0.12.4",
-        "pg-perf-bench": ">=0.2.2",
-        "pg-stand": ">=0.2.2",
-        "pg-workload": ">=0.4.2",
+        "pg-diag": ">=0.18.2",
+        "pg-perf-bench": ">=0.7.4",
+        "pg-stand": ">=0.2.4",
+        "pg-workload": ">=0.6.1",
     }
     for package_name, minimum in minimum_versions.items():
         requirement = next(

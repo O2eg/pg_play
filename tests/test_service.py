@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 from pg_stand.config import load_config
 
 from pg_play.manifest import load_manifest
@@ -207,6 +208,35 @@ def test_plan_is_deterministic_and_passes_configuration_as_stdin(tmp_path: Path)
     assert stand_calls[0].cwd == tmp_path.resolve()
     config_call = next(call for call in runner.invocations if call.component == "pg_configurator")
     assert config_call.input_document["inputs"]["replication_mode"] == "none"
+
+
+def test_explicit_parameters_reach_stand_and_change_the_reviewed_plan(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = PgPlayService(runner=runner)
+    path = _manifest(tmp_path)
+    baseline = service.plan_experiment(path)
+    document = yaml.safe_load(path.read_text())
+    overrides = {
+        "auto_explain.log_min_duration": "0ms",
+        "auto_explain.log_format": "json",
+        "max_connections": 120,
+    }
+    document["spec"]["stand"]["parameter_overrides"] = overrides
+    path.write_text(yaml.safe_dump(document))
+    assert service.validate_experiment(path)["valid"]
+    plan = service.plan_experiment(path)
+    normalized = {key: str(value) for key, value in overrides.items()}
+    assert plan["configuration"]["parameter_overrides"] == normalized
+    assert plan["configuration"]["parameters"]["max_connections"] == "120"
+    assert plan["configuration"]["artifact_hash"] == baseline["configuration"]["artifact_hash"]
+    assert plan["plan_hash"] != baseline["plan_hash"]
+    assert plan["stand"]["desired_state_hash"] != baseline["stand"]["desired_state_hash"]
+    calls = [call for call in runner.invocations if call.component == "pg_stand"]
+    for call in calls[-2:]:
+        assert all(call.input_document[key] == value for key, value in normalized.items())
+    parameters, _ = service._partition_parameters(plan["configuration"]["parameters"])
+    resolved = load_config(STAND_CONFIG, project_directory=tmp_path, postgres_parameters=parameters)
+    assert resolved.config_hash == plan["stand"]["desired_state_hash"]
 
 
 def test_validation_uses_only_non_mutating_component_commands(tmp_path: Path) -> None:

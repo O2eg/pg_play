@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-play"
-version = "0.4.1"
+version = "0.4.2"
 description = "MCP orchestrator for reproducible PostgreSQL performance experiments"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,12 +30,12 @@ classifiers = [
 ]
 dependencies = [
   "mcp>=1.28,<2",
-  "pg-configurator>=0.11.0,<1",
+  "pg-configurator>=0.11.1,<1",
   "pg-converter>=2.0b2,<3",
-  "pg-diag>=0.12.4,<1",
-  "pg-perf-bench>=0.2.2,<1",
-  "pg-stand>=0.2.2,<1",
-  "pg-workload>=0.4.2,<1",
+  "pg-diag>=0.18.2,<1",
+  "pg-perf-bench>=0.7.4,<1",
+  "pg-stand>=0.2.4,<1",
+  "pg-workload>=0.6.1,<1",
   "PyYAML>=6.0,<7",
 ]
 

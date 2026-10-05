@@ -95,8 +95,17 @@ are hidden from its primary help and its normal human output is unchanged.
 python -m pip install pg-play
 ```
 
-This installs compatible versions of all six component distributions. They
-remain available through their own commands:
+This installs compatible versions of all six component distributions. The minimum
+versions are `pg-configurator>=0.11.1`, `pg-diag>=0.18.2`, `pg-stand>=0.2.4`,
+`pg-workload>=0.6.1`, `pg-perf-bench>=0.7.4`, and `pg-converter>=2.0b2`.
+Newer compatible versions are allowed; the major-version bounds are declared in
+`pyproject.toml`. To update an existing installation and its components together:
+
+```bash
+python -m pip install --upgrade --upgrade-strategy eager pg-play
+```
+
+The components remain available through their own commands:
 
 ```bash
 pg-stand --help
@@ -123,6 +132,10 @@ spec:
   stand:
     config: ../pg_stand/configs/single.yaml
     project: ./stand
+    # Optional values applied after pg_configurator recommendations:
+    # parameter_overrides:
+    #   auto_explain.log_min_duration: 0ms
+    #   auto_explain.log_format: json
   configurator:
     inputs:
       db_cpu: 4
@@ -203,6 +216,14 @@ and storage regardless of the caller's current directory. Credentials never
 belong in this file. `pg_play` obtains the stand-owned administrator credential, creates a
 random workload credential, and stores project-local passfiles with mode
 `0600`.
+
+`spec.stand.parameter_overrides` replaces selected generated PostgreSQL values.
+Use it for an experiment that needs specific logging thresholds or connection
+limits. Overrides pass the same validation as `pg_stand` parameters: topology,
+TLS, fixed CSV paths and preloaded libraries remain stand-managed. The effective
+values and explicit overrides are included in the reviewed plan and its hash;
+the configurator artifact hash identifies the original generated candidate.
+Configurator safety budgets describe that candidate before manual overrides.
 
 The workload resource guard is always enabled by `pg_play`. Its thresholds are
 manifest inputs and therefore part of the reviewed plan hash; override them

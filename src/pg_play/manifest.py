@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 from pg_diag.runtime_config import validate_snapshots_window
+from pg_stand.config import ConfigError, load_config
 
 from pg_play.contract import canonical_hash
 
@@ -93,6 +94,7 @@ class ExperimentManifest:
     artifact_root: Path
     stand_config: Path
     stand_project: Path
+    stand_parameter_overrides: dict[str, str]
     configurator_inputs: dict[str, Any]
     workload: WorkloadSpec
     diagnostics: DiagnosticSpec
@@ -184,13 +186,26 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
         spec.get("artifact_root", f".pg_play/experiments/{experiment_id}"),
         "spec.artifact_root",
     )
-    stand = _mapping(spec.get("stand"), "spec.stand", {"config", "project"})
+    stand = _mapping(spec.get("stand"), "spec.stand", {"config", "project", "parameter_overrides"})
     stand_config = _path(base, stand.get("config"), "spec.stand.config")
     if not stand_config.is_file():
         raise ManifestError(f"stand configuration does not exist: {stand_config}")
     stand_project = _path(base, stand.get("project", "."), "spec.stand.project")
     if not stand_project.is_dir():
         raise ManifestError(f"stand project directory does not exist: {stand_project}")
+    overrides = stand.get("parameter_overrides", {})
+    if not isinstance(overrides, dict):
+        raise ManifestError("spec.stand.parameter_overrides must be a mapping")
+    if overrides:
+        try:
+            override_config = load_config(
+                stand_config,
+                project_directory=stand_project,
+                postgres_parameters=overrides,
+            )
+        except ConfigError as exc:
+            raise ManifestError(f"spec.stand.parameter_overrides: {exc}") from exc
+        overrides = {key: override_config.postgres.parameters[key] for key in overrides}
     configurator = _mapping(
         spec.get("configurator", {}),
         "spec.configurator",
@@ -567,6 +582,7 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
         artifact_root=artifact_root,
         stand_config=stand_config,
         stand_project=stand_project,
+        stand_parameter_overrides=dict(overrides),
         configurator_inputs=dict(inputs),
         workload=workload,
         diagnostics=diagnostics,

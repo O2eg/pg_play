@@ -504,9 +504,10 @@ class PgPlayService:
         stand_result = self._require(
             self._invoke(
                 "pg_stand",
-                ("--config", str(manifest.stand_config), "validate"),
+                ("--config", str(manifest.stand_config), "--parameters-json=-", "validate"),
                 request_id=f"{manifest.experiment_id}-validate-stand",
                 cwd=manifest.stand_project,
+                input_document=manifest.stand_parameter_overrides,
             ),
             {"succeeded"},
         )
@@ -618,6 +619,7 @@ class PgPlayService:
         candidate_parameters = self._semantic_postgresql_parameters(
             config_artifact["postgresql_conf"]
         )
+        candidate_parameters.update(manifest.stand_parameter_overrides)
         parameters, stand_managed_parameters = self._partition_parameters(candidate_parameters)
         resolved_config = load_config(
             manifest.stand_config,
@@ -778,6 +780,7 @@ class PgPlayService:
                 "stand_parameter_count": len(parameters),
                 "parameters": candidate_parameters,
                 "stand_managed_parameters": stand_managed_parameters,
+                "parameter_overrides": manifest.stand_parameter_overrides,
             },
             "phases": {
                 "benchmark": manifest.phases.benchmark,

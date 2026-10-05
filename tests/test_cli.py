@@ -18,7 +18,7 @@ def test_version_option(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out == "pg-play 0.4.1\n"
+    assert capsys.readouterr().out == "pg-play 0.4.2\n"
 
 
 def test_join_and_teardown_cli_use_explicit_safe_arguments() -> None:
