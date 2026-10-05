@@ -40,7 +40,7 @@ def test_distribution_metadata_requires_every_orchestrated_component() -> None:
     minimum_versions = {
         "pg-configurator": ">=0.11.1",
         "pg-converter": ">=2.0b2",
-        "pg-diag": ">=0.18.2",
+        "pg-diag": ">=0.18.3",
         "pg-perf-bench": ">=0.7.4",
         "pg-stand": ">=0.2.4",
         "pg-workload": ">=0.6.1",
