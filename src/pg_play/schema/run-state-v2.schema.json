@@ -55,6 +55,7 @@
         "properties": {
           "name": {
             "enum": [
+              "maker",
               "stand",
               "benchmark",
               "prepare-db",
@@ -73,7 +74,8 @@
               "idempotent_database_prepare",
               "idempotent_profile_install",
               "desired_state",
-              "read_only"
+              "read_only",
+              "maker_owned_operation"
             ]
           },
           "artifacts": {"type": "array", "items": {"type": "object"}}

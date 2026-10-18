@@ -19,10 +19,81 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command")
 
+    maker = commands.add_parser("maker", help="Manage durable pg_maker operations")
+    maker_commands = maker.add_subparsers(dest="maker_command", required=True)
+    from pg_play.maker_development import add_commands
+
+    add_commands(maker_commands)
+    maker_commands.add_parser("validate").add_argument("manifest")
+    for name in ("prepare", "resolve"):
+        command = maker_commands.add_parser(name)
+        command.add_argument("--config-dir")
+        command.add_argument("--feature", action="append", dest="features")
+        command.add_argument("--build-mode", choices=["release", "debug"])
+        docs = command.add_mutually_exclusive_group()
+        docs.add_argument("--with-doc", dest="with_doc", action="store_true", default=None)
+        docs.add_argument("--without-doc", dest="with_doc", action="store_false")
+        command.add_argument("--doc-language", action="append", dest="doc_languages")
+        command.add_argument("manifest")
+        command.add_argument("--output", required=True)
+        command.add_argument("--operations", required=True)
+        command.add_argument("--input-store", required=True)
+        command.add_argument("--operation-id", required=True)
+        command.add_argument("--offline", action="store_true")
+        if name == "resolve":
+            command.add_argument("--environments", required=True)
+    command = maker_commands.add_parser("plan")
+    command.add_argument("lock")
+    command.add_argument("--input-store")
+    command.add_argument("--goal", default="package")
+    command.add_argument("--run-db-tests", action="store_true")
+    command = maker_commands.add_parser("start")
+    command.add_argument("plan")
+    command.add_argument("--plan-hash", required=True)
+    command.add_argument("--operations", required=True)
+    command.add_argument("--operation-id", required=True)
+    command.add_argument("--cache-store")
+    for name in ("status", "events", "cancel", "resume", "artifacts", "export"):
+        command = maker_commands.add_parser(name)
+        command.add_argument("directory")
+        if name == "events":
+            command.add_argument("--after-sequence", type=int, default=0)
+            command.add_argument("--limit", type=int, default=100)
+        if name == "resume":
+            command.add_argument("--plan-hash")
+            command.add_argument("--input-hash")
+        if name == "export":
+            command.add_argument("--output", required=True)
+    command = maker_commands.add_parser("runtime-plan")
+    command.add_argument("artifacts")
+    command.add_argument("--base-image", required=True)
+    command.add_argument("--output", required=True)
+    command = maker_commands.add_parser("changes-workspace")
+    command.add_argument("directory")
+    command.add_argument("--input-store", required=True)
+    command.add_argument("--source-hash", required=True)
+    command.add_argument("--lock")
+    command.add_argument("--feature")
+    command.add_argument("--until")
+    command = maker_commands.add_parser("changes-validate")
+    command.add_argument("file")
+    command = maker_commands.add_parser("changes-export")
+    command.add_argument("directory")
+    command.add_argument("--output", required=True)
+    command.add_argument("--id", dest="identifier", required=True)
+    command.add_argument("--postgresql", required=True)
+    command = maker_commands.add_parser("runtime-start")
+    command.add_argument("plan")
+    command.add_argument("--plan-hash", required=True)
+    command.add_argument("--output", required=True)
+    command.add_argument("--operations", required=True)
+    command.add_argument("--operation-id", required=True)
+
     capabilities = commands.add_parser("capabilities", help="Show installed component capabilities")
     capabilities.add_argument(
         "--component",
         choices=(
+            "pg_maker",
             "pg_configurator",
             "pg_converter",
             "pg_stand",
@@ -160,7 +231,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     service = PgPlayService()
     try:
-        if args.command == "capabilities":
+        if args.command == "maker":
+            options = vars(args).copy()
+            options.pop("command")
+            name = options.pop("maker_command")
+            if name == "start":
+                options["plan"] = json.loads(Path(options["plan"]).read_text(encoding="utf-8"))
+            result = getattr(service, "maker_" + name.replace("-", "_"))(**options)
+        elif args.command == "capabilities":
             result = service.component_capabilities(args.component)
         elif args.command == "plan-converter-run":
             result = service.plan_converter_run(

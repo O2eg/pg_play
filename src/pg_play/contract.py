@@ -32,6 +32,7 @@ EXIT_CODES = {
     "ownership_error": 8,
 }
 COMPONENTS = {
+    "pg_maker",
     "pg_configurator",
     "pg_converter",
     "pg_diag",

@@ -21,6 +21,9 @@ mcp = FastMCP(
         "start_live_diagnostics and observe the detached capture through its status and events. "
         "For pg_converter packets, call plan_converter_run, review its exact targets and "
         "packet hashes, then call start_converter_run with the unchanged plan hash."
+        " For PostgreSQL builds, call maker_validate, maker_prepare, maker_resolve and maker_plan, "
+        "then maker_start with the reviewed hash. Observe with maker_status/maker_events and "
+        "cancel through maker_cancel. DB tests default off; succeeded builds remain unverified."
     ),
     json_response=True,
 )
@@ -34,6 +37,273 @@ def _service() -> PgPlayService:
 def component_capabilities(component: str | None = None) -> dict[str, Any]:
     """Return installed component contracts; optionally select one component."""
     return _service().component_capabilities(component)
+
+
+@mcp.tool()
+def maker_validate(manifest: str) -> dict:
+    """Validate maker configuration without preparing images or building PostgreSQL."""
+    return _service().maker_validate(manifest)
+
+
+@mcp.tool()
+def maker_dev_open(
+    directory: str,
+    lock: str | None = None,
+    from_run: str | None = None,
+    feature: str | None = None,
+    input_store: str | None = None,
+    repository: str | None = None,
+) -> dict:
+    """Open owned Git trees from a lock or stopped build, optionally preserving Git history."""
+    return _service().maker_dev_open(
+        directory,
+        lock=lock,
+        from_run=from_run,
+        feature=feature,
+        input_store=input_store,
+        repository=repository,
+    )
+
+
+@mcp.tool()
+def maker_dev_status(directory: str) -> dict:
+    """Show Git heads, dirty files, conflicts and immutable build iterations."""
+    return _service().maker_dev_status(directory)
+
+
+@mcp.tool()
+def maker_dev_patch(
+    directory: str,
+    action: str,
+    scope: str = "postgresql",
+    identifier: str | None = None,
+    patch: str | None = None,
+    count: int = 1,
+    message: str | None = None,
+    onto_source: str | None = None,
+    onto_lock: str | None = None,
+    output: str | None = None,
+) -> dict:
+    """Import/commit/refresh/pop/push/rebase/continue/abort/export/adopt an owned patch series."""
+    return _service().maker_dev_patch(
+        directory,
+        action,
+        scope=scope,
+        identifier=identifier,
+        patch=patch,
+        count=count,
+        message=message,
+        onto_source=onto_source,
+        onto_lock=onto_lock,
+        output=output,
+    )
+
+
+@mcp.tool()
+def maker_dev_build(
+    directory: str, goal: str = "build", components: list[str] | None = None
+) -> dict:
+    """Freeze a new iteration and start its durable worker; DB tests remain disabled."""
+    return _service().maker_dev_build(directory, goal=goal, components=components)
+
+
+@mcp.tool()
+def maker_dev_explain(
+    directory: str, goal: str = "build", components: list[str] | None = None
+) -> dict:
+    """Explain changed build inputs and opportunities to reuse previous results."""
+    return _service().maker_dev_explain(directory, goal=goal, components=components)
+
+
+@mcp.tool()
+def maker_dev_exec(
+    directory: str,
+    argv: list[str],
+    iteration: str | None = None,
+    component: str | None = None,
+    target: str | None = None,
+    timeout_seconds: int = 3600,
+) -> dict:
+    """Start a diagnostic command in a private container copy of an iteration's build workspace."""
+    return _service().maker_dev_exec(
+        directory,
+        argv,
+        iteration=iteration,
+        component=component,
+        target=target,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@mcp.tool()
+def maker_dev_pin(directory: str, iteration: str, pinned: bool = True) -> dict:
+    """Protect an iteration's scratch from development cleanup, or release the pin."""
+    return _service().maker_dev_pin(directory, iteration, pinned=pinned)
+
+
+@mcp.tool()
+def maker_dev_prune(
+    directory: str, keep_last: int = 2, output: str | None = None, apply: str | None = None
+) -> dict:
+    """Preview old iteration scratch cleanup, or apply an unchanged saved plan."""
+    return _service().maker_dev_prune(directory, keep_last=keep_last, output=output, apply=apply)
+
+
+@mcp.tool()
+def maker_prepare(
+    manifest: str,
+    output: str,
+    operations: str,
+    input_store: str,
+    operation_id: str,
+    offline: bool = False,
+    config_dir: str | None = None,
+    features: list[str] | None = None,
+    build_mode: str | None = None,
+    with_doc: bool | None = None,
+    doc_languages: list[str] | None = None,
+) -> dict:
+    """Start durable preparation of maker build/test environments."""
+    return _service().maker_prepare(
+        manifest,
+        output,
+        operations,
+        input_store,
+        operation_id,
+        offline,
+        config_dir=config_dir,
+        features=features,
+        build_mode=build_mode,
+        with_doc=with_doc,
+        doc_languages=doc_languages,
+    )
+
+
+@mcp.tool()
+def maker_resolve(
+    manifest: str,
+    environments: str,
+    output: str,
+    operations: str,
+    input_store: str,
+    operation_id: str,
+    offline: bool = False,
+    config_dir: str | None = None,
+    features: list[str] | None = None,
+    build_mode: str | None = None,
+    with_doc: bool | None = None,
+    doc_languages: list[str] | None = None,
+) -> dict:
+    """Freeze sources and prepared environments in a BuildLock; observe via maker_status."""
+    return _service().maker_resolve(
+        manifest,
+        environments,
+        output,
+        operations,
+        input_store,
+        operation_id,
+        offline,
+        config_dir=config_dir,
+        features=features,
+        build_mode=build_mode,
+        with_doc=with_doc,
+        doc_languages=doc_languages,
+    )
+
+
+@mcp.tool()
+def maker_plan(
+    lock: str, input_store: str | None = None, goal: str = "package", run_db_tests: bool = False
+) -> dict:
+    """Plan a locked build. DB tests default off; resulting packages remain unverified."""
+    return _service().maker_plan(lock, input_store, goal, run_db_tests)
+
+
+@mcp.tool()
+def maker_start(
+    plan: dict, plan_hash: str, operations: str, operation_id: str, cache_store: str | None = None
+) -> dict:
+    """Start an unchanged reviewed plan in maker's detached worker."""
+    return _service().maker_start(plan, plan_hash, operations, operation_id, cache_store)
+
+
+@mcp.tool()
+def maker_status(directory: str) -> dict:
+    """Read maker state and reconcile a lost worker."""
+    return _service().maker_status(directory)
+
+
+@mcp.tool()
+def maker_events(directory: str, after_sequence: int = 0, limit: int = 100) -> dict:
+    """Read ordered maker events after a durable cursor."""
+    return _service().maker_events(directory, after_sequence, limit)
+
+
+@mcp.tool()
+def maker_cancel(directory: str) -> dict:
+    """Cancel the maker worker and its owned resources, including after a client disconnect."""
+    return _service().maker_cancel(directory)
+
+
+@mcp.tool()
+def maker_resume(
+    directory: str, plan_hash: str | None = None, input_hash: str | None = None
+) -> dict:
+    """Resume with the original build plan hash or preparation input hash."""
+    return _service().maker_resume(directory, plan_hash, input_hash)
+
+
+@mcp.tool()
+def maker_artifacts(directory: str) -> dict:
+    """List verified artifact references, reports and qualification without copying files."""
+    return _service().maker_artifacts(directory)
+
+
+@mcp.tool()
+def maker_export(directory: str, output: str) -> dict:
+    """Export a terminal maker operation to a new directory before scratch cleanup."""
+    return _service().maker_export(directory, output)
+
+
+@mcp.tool()
+def maker_runtime_plan(artifacts: str, base_image: str, output: str) -> dict:
+    """Plan a Debian 13 stand image from exact package bytes and a pinned prepared base."""
+    return _service().maker_runtime_plan(artifacts, base_image, output)
+
+
+@mcp.tool()
+def maker_runtime_start(
+    plan: str, plan_hash: str, output: str, operations: str, operation_id: str
+) -> dict:
+    """Start an offline runtime image build; initialization and DB tests are not run."""
+    return _service().maker_runtime_start(plan, plan_hash, output, operations, operation_id)
+
+
+@mcp.tool()
+def maker_changes_workspace(
+    directory: str,
+    input_store: str,
+    source_hash: str,
+    lock: str | None = None,
+    feature: str | None = None,
+    until: str | None = None,
+) -> dict:
+    """Copy a verified immutable source snapshot to a new private agent workspace."""
+    return _service().maker_changes_workspace(
+        directory, input_store, source_hash, lock, feature, until
+    )
+
+
+@mcp.tool()
+def maker_changes_validate(file: str) -> dict:
+    """Validate ChangeSet structure and referenced files; does not run acceptance tests."""
+    return _service().maker_changes_validate(file)
+
+
+@mcp.tool()
+def maker_changes_export(directory: str, output: str, identifier: str, postgresql: str) -> dict:
+    """Export exact text changes from a private workspace, preserving unknown ABI compatibility."""
+    return _service().maker_changes_export(directory, output, identifier, postgresql)
 
 
 @mcp.tool()

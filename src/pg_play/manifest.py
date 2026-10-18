@@ -88,6 +88,15 @@ class PhaseSpec:
 
 
 @dataclass(frozen=True)
+class MakerSpec:
+    plan: Path
+    plan_hash: str
+    variant: str
+    runtime_base_image: str
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class ExperimentManifest:
     source: Path
     experiment_id: str
@@ -101,6 +110,7 @@ class ExperimentManifest:
     benchmark: BenchmarkSpec | None
     phases: PhaseSpec
     document_hash: str
+    maker: MakerSpec | None = None
 
 
 def _mapping(value: Any, label: str, allowed: set[str]) -> dict[str, Any]:
@@ -178,6 +188,7 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
             "diagnostics",
             "benchmark",
             "phases",
+            "maker",
         },
     )
     base = source.parent
@@ -576,6 +587,34 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
     if phases.recreate_workload_database and not phases.workload_diagnostics:
         raise ManifestError("spec.phases.recreate_workload_database requires workload_diagnostics")
 
+    maker = None
+    if "maker" in spec:
+        value = _mapping(
+            spec["maker"],
+            "spec.maker",
+            {"plan", "plan_hash", "variant", "runtime_base_image", "timeout_seconds"},
+        )
+        maker = MakerSpec(
+            plan=_path(base, value.get("plan"), "spec.maker.plan"),
+            plan_hash=_text(value.get("plan_hash"), "spec.maker.plan_hash"),
+            variant=_text(value.get("variant"), "spec.maker.variant"),
+            runtime_base_image=_text(
+                value.get("runtime_base_image"), "spec.maker.runtime_base_image"
+            ),
+            timeout_seconds=_integer(
+                value.get("timeout_seconds", 7200),
+                "spec.maker.timeout_seconds",
+                minimum=1,
+                maximum=259200,
+            ),
+        )
+        if not maker.plan.is_file():
+            raise ManifestError("spec.maker.plan does not exist")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,200}", maker.variant):
+            raise ManifestError("invalid maker variant")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", maker.runtime_base_image):
+            raise ManifestError("maker runtime_base_image must be an immutable local image ID")
+
     return ExperimentManifest(
         source=source,
         experiment_id=experiment_id,
@@ -589,4 +628,5 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
         benchmark=benchmark,
         phases=phases,
         document_hash=canonical_hash(document),
+        maker=maker,
     )

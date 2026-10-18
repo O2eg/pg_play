@@ -20,6 +20,9 @@ is `pg-play-mcp`. The import package and GitHub repository are named `pg_play`.
 - Plans and runs reviewed `pg_converter` packets against an exact alias set
   through a detached, auditable, sequential workflow.
 - Installs every component while preserving their independent use.
+- Optionally builds PostgreSQL through pg_maker, records package/image provenance,
+  and runs the resulting immutable image in pg_stand. See
+  [the maker workflow and interface contract](docs/pg_maker-integration.md).
 
 The independently installable components are:
 
@@ -69,7 +72,7 @@ The control layers are deliberately separate:
 agent skills          workflow and interpretation rules
       |
       v
-pg-play-mcp           thirty-one typed, high-level operations
+pg-play-mcp           typed, high-level operations
       |
       v
 pg_play core          validation, planning, state, comparison
@@ -79,14 +82,17 @@ component adapters    argv arrays + strict JSON envelopes
       |
       +---- pg_configurator
       +---- pg_converter
+      +---- pg_maker (optional)
       +---- pg_stand
       +---- pg_workload
       +---- pg_diag
       `---- pg_perf_bench
 ```
 
-MCP does not expose arbitrary shell, SQL, Docker, or raw component-command
-tools. Each component remains pleasant to use directly: orchestration flags
+MCP exposes typed workflow operations. The optional `maker_dev_exec` tool runs
+an argument vector inside a private copy of a pg_maker build container; it does
+not provide a host shell or a database SQL console. Each component remains
+pleasant to use directly: orchestration flags
 are hidden from its primary help and its normal human output is unchanged.
 
 ## Installation
@@ -104,6 +110,17 @@ Newer compatible versions are allowed; the major-version bounds are declared in
 ```bash
 python -m pip install --upgrade --upgrade-strategy eager pg-play
 ```
+
+To include PostgreSQL builds, documentation and Git development sessions, install
+the optional maker component:
+
+```bash
+python -m pip install --upgrade --upgrade-strategy eager 'pg-play[maker]'
+pg-play capabilities --component pg_maker
+```
+
+This adds `pg-maker>=0.1.0,<1`. See the [maker integration guide](docs/pg_maker-integration.md)
+for CLI, Python and MCP operations and [the changelog](CHANGELOG.md) for release notes.
 
 The components remain available through their own commands:
 
@@ -614,7 +631,7 @@ parameters and the expected result.
 python3 -m venv .venv
 .venv/bin/pip install -e ../pg_stand -e ../pg_workload -e ../pg_diag \
   -e ../pg_configurator -e ../pg_converter -e ../pg_perf_bench
-.venv/bin/pip install -e '.[dev]'
+.venv/bin/pip install -e '.[dev,maker]'
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 .venv/bin/pytest
@@ -623,7 +640,8 @@ python3 -m venv .venv
 For coordinated releases, publish the component distributions before tagging
 `pg_play`: first `pg_configurator`, `pg_converter`, `pg_diag`, `pg_stand`, and
 `pg_workload`, then `pg_perf_bench` (which depends on `pg_diag`), and finally
-`pg_play`.
+`pg_play`. Publish a required `pg_maker` update before `pg_play` when changing the
+optional maker integration.
 Ordinary branch CI checks out the component sources so a coordinated source
 change can be tested before those versions reach PyPI. Tagged publish jobs use
 the package index deliberately and therefore enforce this release order.

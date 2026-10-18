@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install all component, test, and build dependencies
-        run: python -m pip install --editable '.[dev]'
+        run: python -m pip install --editable '.[dev,maker]'
       - name: Verify tag matches package version
         shell: bash
         run: |
@@ -54,6 +54,11 @@ jobs:
           for command in pg-configurator pg-converter pg-diag pg-perf-bench pg-stand pg-workload; do
             "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/${command}" --version
           done
+          for wheel in dist/*.whl; do
+            "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip install "${wheel}[maker]"
+          done
+          "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" capabilities --component pg_maker
+          "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" maker dev-open --help
       - name: Upload distributions for publishing
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

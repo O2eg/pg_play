@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from pg_play.contract import SUPPORTED_CONTRACT_VERSIONS
+from pg_play.runner import ComponentRunner
 from pg_play.service import PgPlayService
 
 
@@ -17,7 +18,7 @@ def test_installed_components_share_the_pg_play_capability_contract() -> None:
         "pg_perf_bench",
         "pg_stand",
         "pg_workload",
-    }
+    } | ({"pg_maker"} if ComponentRunner.available("pg_maker") else set())
     for component, document in capabilities.items():
         assert document["component"] == component
         assert document["capability_schema_version"] == "pg_play/capabilities/v1"

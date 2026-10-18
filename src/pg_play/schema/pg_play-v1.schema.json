@@ -21,6 +21,17 @@
       "additionalProperties": false,
       "required": ["stand", "workload"],
       "properties": {
+        "maker": {
+          "type": "object", "additionalProperties": false,
+          "required": ["plan", "plan_hash", "variant", "runtime_base_image"],
+          "properties": {
+            "plan": {"type": "string", "minLength": 1},
+            "plan_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "variant": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$"},
+            "runtime_base_image": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 259200}
+          }
+        },
         "artifact_root": {"type": "string", "minLength": 1},
         "stand": {
           "type": "object",

@@ -1,0 +1,26 @@
+api_version: pg_maker/component/v1
+kind: ComponentRecipe
+metadata:
+  id: pg-buffercache
+  revision: 1
+spec:
+  type: contrib
+  source_directory: contrib/pg_buffercache
+  compatible_postgresql: ==18.1
+  requires: []
+  conflicts: []
+  build_dependencies: []
+  runtime_dependencies: []
+  make_targets:
+  - all
+  test_targets:
+  - installcheck
+  install_targets:
+  - install
+  required_tests: []
+  sql_extension: pg_buffercache
+  shared_library: pg_buffercache
+  runtime_files:
+  - lib/postgresql/pg_buffercache.so
+  - share/postgresql/extension/pg_buffercache.control
+  - share/postgresql/extension/pg_buffercache--*.sql

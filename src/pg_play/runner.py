@@ -17,6 +17,7 @@ from pg_play.contract import ContractError, validate_envelope
 from pg_play.state import read_state, utc_now, write_json
 
 EXECUTABLES = {
+    "pg_maker": "pg-maker",
     "pg_configurator": "pg-configurator",
     "pg_converter": "pg-converter",
     "pg_diag": "pg-diag",
@@ -49,6 +50,14 @@ class ComponentInvocation:
 
 
 class ComponentRunner:
+    @staticmethod
+    def available(component: str) -> bool:
+        name = EXECUTABLES.get(component)
+        return bool(
+            name
+            and (shutil.which(name) or Path(sys.executable).absolute().with_name(name).is_file())
+        )
+
     def run(self, invocation: ComponentInvocation) -> dict[str, Any]:
         executable_name = EXECUTABLES.get(invocation.component)
         if executable_name is None:

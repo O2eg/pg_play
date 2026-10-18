@@ -60,7 +60,7 @@ jobs:
             --editable .ci-components/pg_perf_bench \
             --editable .ci-components/pg_stand \
             --editable .ci-components/pg_workload \
-            --editable '.[dev]'
+            --editable '.[dev,maker]'
       - run: ruff check --exclude .ci-components .
       - run: ruff format --check --exclude .ci-components .
       - run: python -m pytest -q
@@ -120,3 +120,8 @@ jobs:
           for command in pg-configurator pg-converter pg-diag pg-perf-bench pg-stand pg-workload; do
             "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/${command}" --version
           done
+          for wheel in dist/*.whl; do
+            "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip install "${wheel}[maker]"
+          done
+          "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" capabilities --component pg_maker
+          "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" maker dev-open --help

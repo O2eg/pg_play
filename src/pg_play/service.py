@@ -66,6 +66,7 @@ from pg_play.state import (
 _RUN_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
 _ACTIVE_STATES = {"queued", "running", "cancelling"}
 _RESUMABLE_STEP_POLICIES = {
+    "maker": "maker_owned_operation",
     "stand": "reconcile",
     "benchmark": "idempotent_database_reset",
     "prepare-db": "idempotent_database_prepare",
@@ -74,8 +75,20 @@ _RESUMABLE_STEP_POLICIES = {
     "diagnostics": "read_only",
     "stop-workload": "desired_state",
 }
-_REQUIRED_STEP_ARTIFACTS = {"benchmark", "diagnostics"}
+_REQUIRED_STEP_ARTIFACTS = {"benchmark", "diagnostics", "maker"}
 _REQUIRED_COMPONENT_COMMANDS = {
+    "pg_maker": {
+        "validate",
+        "env prepare",
+        "resolve",
+        "plan",
+        "build",
+        "status",
+        "events",
+        "cancel",
+        "resume",
+        "export",
+    },
     "pg_configurator": {"capabilities", "generate", "validate-input"},
     "pg_converter": {"capabilities", "plan", "run"},
     "pg_stand": {"apply", "capabilities", "down", "plan", "status", "up", "validate"},
@@ -131,6 +144,235 @@ class PgPlayService:
         self.runner = runner or ComponentRunner()
         self._execution_context: _ExecutionContext | None = None
 
+    @property
+    def maker(self):
+        from pg_play.maker import MakerClient
+
+        return MakerClient(self.runner)
+
+    def maker_validate(self, manifest: str) -> dict:
+        return self.maker.validate(manifest)
+
+    def maker_dev_open(
+        self,
+        directory: str,
+        *,
+        lock=None,
+        from_run=None,
+        feature=None,
+        input_store=None,
+        repository=None,
+    ) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(
+            self.maker,
+            "open",
+            directory,
+            lock=lock,
+            from_run=from_run,
+            feature=feature,
+            input_store=input_store,
+            repository=repository,
+        )
+
+    def maker_dev_status(self, directory: str) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(self.maker, "status", directory)
+
+    def maker_dev_patch(self, directory: str, action: str, **options) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(self.maker, "patch", directory, action=action, **options)
+
+    def maker_dev_build(self, directory: str, *, goal="build", components=None) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(self.maker, "build", directory, goal=goal, components=components)
+
+    def maker_dev_explain(self, directory: str, *, goal="build", components=None) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(self.maker, "explain", directory, goal=goal, components=components)
+
+    def maker_dev_exec(self, directory: str, argv: list[str], **options) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(self.maker, "exec", directory, argv=argv, **options)
+
+    def maker_dev_pin(self, directory: str, iteration: str, *, pinned=True) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(self.maker, "pin", directory, iteration=iteration, pinned=pinned)
+
+    def maker_dev_prune(self, directory: str, *, keep_last=2, output=None, apply=None) -> dict:
+        from pg_play.maker_development import invoke
+
+        return invoke(
+            self.maker, "prune", directory, keep_last=keep_last, output=output, apply=apply
+        )
+
+    def maker_prepare(
+        self,
+        manifest: str,
+        output: str,
+        operations: str,
+        input_store: str,
+        operation_id: str,
+        offline: bool = False,
+        config_dir: str | None = None,
+        features: list[str] | None = None,
+        build_mode: str | None = None,
+        with_doc: bool | None = None,
+        doc_languages: list[str] | None = None,
+    ) -> dict:
+        return self.maker.prepare(
+            manifest,
+            output,
+            operations,
+            input_store,
+            operation_id,
+            offline=offline,
+            config_dir=config_dir,
+            features=features,
+            build_mode=build_mode,
+            with_doc=with_doc,
+            doc_languages=doc_languages,
+        )
+
+    def maker_resolve(
+        self,
+        manifest: str,
+        environments: str,
+        output: str,
+        operations: str,
+        input_store: str,
+        operation_id: str,
+        offline: bool = False,
+        config_dir: str | None = None,
+        features: list[str] | None = None,
+        build_mode: str | None = None,
+        with_doc: bool | None = None,
+        doc_languages: list[str] | None = None,
+    ) -> dict:
+        return self.maker.prepare(
+            manifest,
+            output,
+            operations,
+            input_store,
+            operation_id,
+            environments=environments,
+            offline=offline,
+            config_dir=config_dir,
+            features=features,
+            build_mode=build_mode,
+            with_doc=with_doc,
+            doc_languages=doc_languages,
+        )
+
+    def maker_plan(
+        self,
+        lock: str,
+        input_store: str | None = None,
+        goal: str = "package",
+        run_db_tests: bool = False,
+    ) -> dict:
+        return self.maker.plan(lock, input_store=input_store, goal=goal, run_db_tests=run_db_tests)
+
+    def maker_start(
+        self,
+        plan: dict,
+        plan_hash: str,
+        operations: str,
+        operation_id: str,
+        cache_store: str | None = None,
+    ) -> dict:
+        return self.maker.start(plan, plan_hash, operations, operation_id, cache_store=cache_store)
+
+    def maker_status(self, directory: str) -> dict:
+        return self.maker.status(directory)
+
+    def maker_events(self, directory: str, after_sequence: int = 0, limit: int = 100) -> dict:
+        return self.maker.events(directory, after_sequence, limit)
+
+    def maker_cancel(self, directory: str) -> dict:
+        return self.maker.cancel(directory)
+
+    def maker_resume(
+        self, directory: str, plan_hash: str | None = None, input_hash: str | None = None
+    ) -> dict:
+        return self.maker.resume(directory, plan_hash=plan_hash, input_hash=input_hash)
+
+    def maker_artifacts(self, directory: str) -> dict:
+        return self.maker.artifacts(directory)
+
+    def maker_export(self, directory: str, output: str) -> dict:
+        return self.maker.export(directory, output)
+
+    def maker_runtime_plan(self, artifacts: str, base_image: str, output: str) -> dict:
+        from pg_play.maker_runtime import plan_runtime
+
+        return plan_runtime(self.maker, artifacts, base_image, output)
+
+    def maker_changes_workspace(
+        self,
+        directory: str,
+        input_store: str,
+        source_hash: str,
+        lock: str | None = None,
+        feature: str | None = None,
+        until: str | None = None,
+    ) -> dict:
+        args = (
+            "changes",
+            "workspace",
+            str(Path(directory).absolute()),
+            "--input-store",
+            str(Path(input_store).absolute()),
+            "--source-hash",
+            source_hash,
+        )
+        if lock is not None:
+            args += ("--lock", str(Path(lock).absolute()))
+        for flag, value in (("--feature", feature), ("--until", until)):
+            if value is not None:
+                args += (flag, value)
+        return self.maker.call(args)
+
+    def maker_changes_validate(self, file: str) -> dict:
+        return self.maker.call(("changes", "validate", str(Path(file).absolute())))
+
+    def maker_changes_export(
+        self, directory: str, output: str, identifier: str, postgresql: str
+    ) -> dict:
+        return self.maker.call(
+            (
+                "changes",
+                "export",
+                str(Path(directory).absolute()),
+                "--out",
+                str(Path(output).absolute()),
+                "--id",
+                identifier,
+                "--postgresql",
+                postgresql,
+            )
+        )
+
+    def maker_runtime_start(
+        self, plan: str, plan_hash: str, output: str, operations: str, operation_id: str
+    ) -> dict:
+        from pg_play.maker_runtime import start_runtime
+
+        return start_runtime(self.maker, plan, plan_hash, output, operations, operation_id)
+
+    @staticmethod
+    def _stand_config(manifest: ExperimentManifest) -> Path:
+        from pg_play.maker_experiment import stand_config
+
+        return stand_config(manifest)
+
     def component_capabilities(self, component: str | None = None) -> dict[str, Any]:
         components = (
             [component]
@@ -145,6 +387,12 @@ class PgPlayService:
             ]
         )
         unknown = sorted(set(components).difference(_REQUIRED_COMPONENT_COMMANDS))
+        if (
+            component is None
+            and isinstance(self.runner, ComponentRunner)
+            and self.runner.available("pg_maker")
+        ):
+            components.append("pg_maker")
         if unknown:
             raise OrchestrationError("unknown component(s): " + ", ".join(unknown))
         result = {}
@@ -480,7 +728,7 @@ class PgPlayService:
     def validate_experiment(self, manifest_path: str | Path) -> dict[str, Any]:
         manifest = load_manifest(manifest_path)
         base_config = load_config(
-            manifest.stand_config,
+            self._stand_config(manifest),
             project_directory=manifest.stand_project,
         )
         self._validate_supported_stand(base_config)
@@ -504,7 +752,7 @@ class PgPlayService:
         stand_result = self._require(
             self._invoke(
                 "pg_stand",
-                ("--config", str(manifest.stand_config), "--parameters-json=-", "validate"),
+                ("--config", str(self._stand_config(manifest)), "--parameters-json=-", "validate"),
                 request_id=f"{manifest.experiment_id}-validate-stand",
                 cwd=manifest.stand_project,
                 input_document=manifest.stand_parameter_overrides,
@@ -597,7 +845,7 @@ class PgPlayService:
     def plan_experiment(self, manifest_path: str | Path) -> dict[str, Any]:
         manifest = load_manifest(manifest_path)
         base_config = load_config(
-            manifest.stand_config,
+            self._stand_config(manifest),
             project_directory=manifest.stand_project,
         )
         self._validate_supported_stand(base_config)
@@ -622,7 +870,7 @@ class PgPlayService:
         candidate_parameters.update(manifest.stand_parameter_overrides)
         parameters, stand_managed_parameters = self._partition_parameters(candidate_parameters)
         resolved_config = load_config(
-            manifest.stand_config,
+            self._stand_config(manifest),
             project_directory=manifest.stand_project,
             postgres_parameters=parameters,
         )
@@ -630,7 +878,7 @@ class PgPlayService:
             "pg_stand",
             (
                 "--config",
-                str(manifest.stand_config),
+                str(self._stand_config(manifest)),
                 "--parameters-json=-",
                 "plan",
             ),
@@ -804,6 +1052,13 @@ class PgPlayService:
             "benchmark": benchmark_plan["result"] if benchmark_plan is not None else None,
             "warnings": warnings,
         }
+        if manifest.maker is not None:
+            from pg_play.maker_experiment import phase_plan
+
+            stable_plan["maker"] = phase_plan(manifest)
+            stable_plan["components"]["pg_maker"] = self.component_capabilities("pg_maker")[
+                "pg_maker"
+            ]["component_version"]
         stable_plan["plan_hash"] = canonical_hash(stable_plan)
         return stable_plan
 
@@ -996,6 +1251,10 @@ class PgPlayService:
             )
         else:
             request = read_state(context.cancel_path)
+        if manifest.maker is not None:
+            from pg_play.maker_experiment import cancel_owned
+
+            cancel_owned(self.maker, context.run_directory)
         worker = state.get("worker")
         if not isinstance(worker, dict) or not recorded_process_is_alive(worker):
             terminate_recorded_process(context.active_process_path)
@@ -1100,10 +1359,42 @@ class PgPlayService:
             for name in ("benchmark", "diagnostics")
         )
         try:
+            if manifest.maker is not None:
+                from pg_play.maker_experiment import execute_phase, phase_plan
+
+                maker_plan = phase_plan(manifest)
+                if maker_plan != plan.get("maker"):
+                    raise OrchestrationError("maker inputs changed since experiment planning")
+                self._begin_step(state, context, "maker")
+                provenance = execute_phase(
+                    self.maker, maker_plan, run_directory, context.cancel_path, resume=resume
+                )
+                provenance_path = run_directory / "maker" / "provenance.json"
+                state["maker"] = provenance
+                self._step(
+                    state,
+                    state_path,
+                    "maker",
+                    {
+                        "component": "pg_maker",
+                        "command": "build/runtime",
+                        "status": "succeeded",
+                        "warnings": [],
+                        "error": None,
+                        "artifacts": [
+                            {
+                                "path": str(provenance_path),
+                                "sha256": "sha256:"
+                                + hashlib.sha256(provenance_path.read_bytes()).hexdigest(),
+                            }
+                        ],
+                    },
+                    {"succeeded"},
+                )
             candidate_parameters = plan["configuration"]["parameters"]
             parameters, _stand_managed = self._partition_parameters(candidate_parameters)
             config = load_config(
-                manifest.stand_config,
+                self._stand_config(manifest),
                 project_directory=manifest.stand_project,
                 postgres_parameters=parameters,
             )
@@ -1114,16 +1405,27 @@ class PgPlayService:
                 raise OrchestrationError(
                     "stand desired configuration changed since the experiment was planned"
                 )
+            stand_config_path = self._stand_config(manifest)
+            if manifest.maker is not None:
+                from pg_play.maker_experiment import stand_config
+
+                stand_config_path = stand_config(manifest, provenance["image"]["image_id"])
+                config = load_config(
+                    stand_config_path,
+                    project_directory=manifest.stand_project,
+                    postgres_parameters=parameters,
+                )
+                expected_stand_hash = config.config_hash
             connection = self._connection_descriptor(manifest, config)
             stand_completed = self._step_completed(state, "stand", run_directory)
             stand_plan = plan["stand"]
-            if resume:
+            if resume or manifest.maker is not None:
                 stand_plan = self._require(
                     self._invoke(
                         "pg_stand",
                         (
                             "--config",
-                            str(manifest.stand_config),
+                            str(stand_config_path),
                             "--parameters-json=-",
                             "plan",
                         ),
@@ -1137,6 +1439,10 @@ class PgPlayService:
                     raise OrchestrationError(
                         "stand desired configuration changed since the experiment was planned"
                     )
+            if manifest.maker is not None:
+                state["maker_stand_plan"] = stand_plan
+                write_json(run_directory / "maker/stand-plan.json", stand_plan)
+                write_state(state_path, state)
             required_action = stand_plan["required_action"]
             if required_action == "blocked":
                 raise OrchestrationError(str(stand_plan.get("reason", "stand plan is blocked")))
@@ -1164,7 +1470,7 @@ class PgPlayService:
                         "pg_stand",
                         (
                             "--config",
-                            str(manifest.stand_config),
+                            str(stand_config_path),
                             "--parameters-json=-",
                             *stand_args,
                         ),
@@ -1599,7 +1905,7 @@ class PgPlayService:
             raise OrchestrationError("stored PostgreSQL parameter artifact failed verification")
         parameters, _stand_managed = self._partition_parameters(plan["configuration"]["parameters"])
         current_config = load_config(
-            manifest.stand_config,
+            self._stand_config(manifest),
             project_directory=manifest.stand_project,
             postgres_parameters=parameters,
         )
@@ -1934,7 +2240,7 @@ class PgPlayService:
         )
         if workload["status"] not in {"succeeded", "blocked"}:
             self._require(workload, {"succeeded", "blocked"})
-        arguments = ["--config", str(manifest.stand_config), "down"]
+        arguments = ["--config", str(self._stand_config(manifest)), "down"]
         if clear_stand_data:
             arguments.append("--clear-data")
         stand = self._require(

@@ -1,0 +1,22 @@
+api_version: pg_maker/component/v1
+kind: ComponentRecipe
+metadata:
+  id: auto-explain
+  revision: 1
+spec:
+  type: contrib
+  source_directory: contrib/auto_explain
+  compatible_postgresql: ==18.1
+  requires: []
+  conflicts: []
+  build_dependencies: []
+  runtime_dependencies: []
+  make_targets:
+  - all
+  test_targets:
+  - installcheck
+  install_targets:
+  - install
+  required_tests: []
+  runtime_files:
+  - lib/postgresql/auto_explain.so

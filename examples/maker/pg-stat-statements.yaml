@@ -1,0 +1,27 @@
+api_version: pg_maker/component/v1
+kind: ComponentRecipe
+metadata:
+  id: pg-stat-statements
+  revision: 1
+spec:
+  type: contrib
+  source_directory: contrib/pg_stat_statements
+  compatible_postgresql: ==18.1
+  requires: []
+  conflicts: []
+  build_dependencies: []
+  runtime_dependencies: []
+  make_targets:
+  - all
+  test_targets:
+  - check
+  install_targets:
+  - install
+  required_tests: []
+  sql_extension: pg_stat_statements
+  shared_library: pg_stat_statements
+  preload: [pg_stat_statements]
+  runtime_files:
+  - lib/postgresql/pg_stat_statements.so
+  - share/postgresql/extension/pg_stat_statements.control
+  - share/postgresql/extension/pg_stat_statements--*.sql

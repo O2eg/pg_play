@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-play"
-version = "0.4.2"
+version = "0.5.0"
 description = "MCP orchestrator for reproducible PostgreSQL performance experiments"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+maker = ["pg-maker>=0.1.0,<1"]
 dev = [
   "build>=1.2,<2",
   "pytest>=8.3,<9",
@@ -67,6 +68,7 @@ namespaces = false
 
 [tool.setuptools.package-data]
 pg_play = [
+  "assets/*.py",
   "schema/*.json",
   "skills/*/SKILL.md",
   "skills/*/agents/*.yaml",

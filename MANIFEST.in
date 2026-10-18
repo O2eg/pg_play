@@ -1,2 +1,5 @@
 # Repository-only scenarios for generating the website's demonstration reports.
 prune labs
+include CHANGELOG.md
+recursive-include docs *.md
+recursive-include examples/maker *.yaml

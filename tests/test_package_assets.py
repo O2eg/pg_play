@@ -8,6 +8,7 @@ from importlib.resources import files
 def test_schema_and_agent_skills_are_packaged() -> None:
     package = files("pg_play")
 
+    assert package.joinpath("assets/maker-entrypoint.py").is_file()
     assert package.joinpath("schema/pg_play-v1.schema.json").is_file()
     assert package.joinpath("schema/run-state-v2.schema.json").is_file()
     assert package.joinpath("schema/run-event-v1.schema.json").is_file()

@@ -1,0 +1,19 @@
+api_version: pg_maker/feature/v1
+kind: FeatureProfile
+metadata:
+  id: my-feature-stand
+  revision: 1
+spec:
+  description: PostgreSQL with pg_stand diagnostic components
+  numeric_id: null
+  changes: []
+  components:
+  - ../../components/pg-stat-statements.yaml
+  - ../../components/pg-buffercache.yaml
+  - ../../components/auto-explain.yaml
+  - ../../components/pg-wait-sampling.yaml
+  - ../../components/pg-stat-kcache.yaml
+  build_options: {}
+  documentation:
+    rules: []
+  required_tests: []
