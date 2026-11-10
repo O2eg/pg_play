@@ -4,6 +4,9 @@
 packets. It does not expose raw component arguments, SQL, Python source,
 tracker deletion, backend termination, or `--force` through MCP.
 
+See the [deployment scenario](user-scenarios.md#4-rehearse-and-execute-a-reviewed-deployment-packet)
+for rehearsal and target-selection guidance.
+
 ## Prerequisites
 
 - `pg_converter` and `pg_play` are installed in the same environment;
@@ -66,8 +69,8 @@ converter_run_events(run_directory, after_sequence=0, limit=1000)
 ```
 
 Use the returned `last_sequence` as the next cursor. Terminal states are
-`succeeded`, `partial`, `failed`, and `cancelled`. A vanished worker becomes
-`interrupted`.
+`succeeded`, `partial`, `failed`, `cancelled` and `interrupted`. A vanished worker
+becomes `interrupted`. A successful status call does not imply packet success.
 
 The run directory contains:
 
@@ -98,7 +101,7 @@ identity match the active-process record.
 
 There is deliberately no automatic resume tool for packet runs. Transactional
 actions retain PG Converter's tracker guarantees, but a non-transactional or
-maintenance action can finish with an ambiguous outcome. After `failed`,
+maintenance action can finish with an ambiguous outcome. After `partial`, `failed`,
 `cancelled`, or `interrupted`:
 
 1. inspect `state.json`, `events.jsonl`, `worker.log`, and target PostgreSQL;

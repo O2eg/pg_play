@@ -25,7 +25,7 @@ import re
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -209,7 +209,7 @@ async def main() -> None:
     args = parse_args()
     lab = Lab.from_args(args)
     summary: dict[str, Any] = {
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
         "arguments": vars(args),
     }
     lab.write_manifest()
@@ -251,7 +251,7 @@ async def main() -> None:
         await lab_objects(lab, summary)
     await lab_defaults(lab)
     await sizes(lab, "after", summary)
-    summary["finished_at"] = datetime.now(timezone.utc).isoformat()
+    summary["finished_at"] = datetime.now(UTC).isoformat()
     (lab.root / "setup/prepare-summary.json").write_text(json.dumps(summary, indent=2, default=str))
     say("PREPARE COMPLETED")
 

@@ -1,6 +1,6 @@
 # Connect pg_play to agent clients
 
-`pg_play` exposes a local stdio MCP server and five optional Agent Skills. The
+`pg_play` exposes a local stdio MCP server and six optional Agent Skills. The
 MCP server provides the tools; the skills teach an agent the safe workflow for
 planning, starting, monitoring, recovering, and interpreting experiments.
 
@@ -15,6 +15,18 @@ command -v pg-play-mcp
 
 In every example below, replace `/absolute/path/to/pg-play-mcp` with that path.
 Pass the executable directly, without `bash -lc` or another shell wrapper.
+All local references resolve on the MCP server host. Use absolute manifest,
+project, credential and output paths in tool calls so the client's working
+directory cannot select a different project.
+Keep the server's `PATH` pointed at the same environment's `bin` directory:
+component lookup prefers commands on `PATH` over executables beside the server's
+Python interpreter. An absolute MCP command alone does not prevent a different
+globally installed component from being selected.
+
+pg-play 0.6.0 requires Python 3.11+ and installs all eight components, including
+maker and logical replication. For source checkouts, use the
+[development installation](../README.md#development). Use `component_capabilities`
+to verify component versions and supported commands before planning work.
 
 For a source checkout, the skills are in `src/pg_play/skills/`. For an installed
 package, run this with the same Python environment that contains `pg-play`:
@@ -23,10 +35,22 @@ package, run this with the same Python environment that contains `pg-play`:
 python -c 'from importlib.resources import files; print(files("pg_play").joinpath("skills"))'
 ```
 
+Copy complete skill directories, including `references/` and `agents/`, into
+one supported location below. Do not copy only `SKILL.md` or install duplicate
+copies in multiple scopes. Package upgrades do not update copied skills;
+refresh them deliberately. The six names and responsibilities are listed in
+[Agent skills](../README.md#agent-skills); there is no separate packaged logical
+migration skill yet.
+
+Use detached start/status/events operations for long runs. Configuration-fact
+collection and some planning calls are synchronous; set the client's tool
+timeout to allow their collection budget (at least 180 seconds for the bounded
+configuration review). A client timeout does not prove that a mutation stopped.
+
 ## Codex CLI
 
-Official documentation: [MCP](https://developers.openai.com/codex/mcp/) ·
-[Skills](https://developers.openai.com/codex/skills/)
+Official documentation: [MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) ·
+[Skills](https://learn.chatgpt.com/docs/build-skills)
 
 ```bash
 codex mcp add pg_play -- /absolute/path/to/pg-play-mcp
@@ -86,7 +110,7 @@ Create `~/.kimi-code/mcp.json`, or `.kimi-code/mcp.json` for one repository:
       "command": "/absolute/path/to/pg-play-mcp",
       "args": [],
       "startupTimeoutMs": 20000,
-      "toolTimeoutMs": 120000
+      "toolTimeoutMs": 180000
     }
   }
 }

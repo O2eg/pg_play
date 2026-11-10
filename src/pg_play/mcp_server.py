@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -41,6 +41,120 @@ def _service() -> PgPlayService:
 def component_capabilities(component: str | None = None) -> dict[str, Any]:
     """Return installed component contracts; optionally select one component."""
     return _service().component_capabilities(component)
+
+
+@mcp.tool()
+def logical_inspect(
+    config: str,
+    operation: Literal[
+        "validate", "inspect-config", "check", "status", "events", "verify", "report"
+    ] = "status",
+    after: int = 0,
+    limit: int = 100,
+    level: Literal["counts", "checksums", "full"] = "checksums",
+) -> dict:
+    """Inspect a migration by configuration path, keeping credentials in referenced files."""
+    return _service().logical.inspect(config, operation, after=after, limit=limit, level=level)
+
+
+@mcp.tool()
+def logical_plan(
+    config: str,
+    operation: Literal[
+        "prepare",
+        "start",
+        "pause",
+        "resume",
+        "resolve",
+        "resync-table",
+        "abort",
+        "cleanup",
+        "cutover-finalize",
+        "cutover-commit",
+        "ddl-exec",
+        "ddl-queue-skip",
+        "controller",
+        "experiment",
+    ],
+    scenario: str | None = None,
+    duration_seconds: float = 60,
+    poll_interval_seconds: float = 5,
+    timeout_seconds: float = 600,
+    reason: str | None = None,
+    action: Literal["skip", "applied-manually"] | None = None,
+    lsn: str | None = None,
+    table: str | None = None,
+    sql_file: str | None = None,
+    evidence: str | None = None,
+    write_fence: str | None = None,
+    max_duration: int | None = None,
+    wal_rate: int | None = None,
+    job_id: int | None = None,
+    source_unavailable: bool | None = None,
+) -> dict:
+    """Plan an exact operation or bounded experiment. Review endpoints, actions and plan hash."""
+    options = {
+        key: value
+        for key, value in {
+            "reason": reason,
+            "action": action,
+            "lsn": lsn,
+            "table": table,
+            "sql_file": sql_file,
+            "evidence": evidence,
+            "write_fence": write_fence,
+            "max_duration": max_duration,
+            "wal_rate": wal_rate,
+            "job_id": job_id,
+            "source_unavailable": source_unavailable,
+        }.items()
+        if value is not None
+    }
+    return _service().logical.plan(
+        config,
+        operation,
+        options=options,
+        scenario=scenario,
+        duration_seconds=duration_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@mcp.tool()
+def logical_start(plan: dict, plan_hash: str, output_directory: str, run_id: str) -> dict:
+    """Start an unchanged reviewed logical plan in a durable worker."""
+    return _service().logical.start(plan, plan_hash, output_directory, run_id)
+
+
+@mcp.tool()
+def logical_status(directory: str) -> dict:
+    """Read controller state separately from migration state and reconcile a lost worker."""
+    return _service().logical.status(directory)
+
+
+@mcp.tool()
+def logical_events(directory: str, after_sequence: int = 0, limit: int = 100) -> dict:
+    """Read ordered controller and component events with a durable cursor."""
+    return _service().logical.events(directory, after_sequence=after_sequence, limit=limit)
+
+
+@mcp.tool()
+def logical_stop_controller(directory: str, reason: str) -> dict:
+    """Stop only orchestration. Native replication may continue; pause/abort need their own plan."""
+    return _service().logical.stop(directory, reason)
+
+
+@mcp.tool()
+def logical_resume_controller(directory: str, plan_hash: str) -> dict:
+    """Resume an interrupted controller after inspection; BLOCKED requires planned recovery."""
+    return _service().logical.resume(directory, plan_hash)
+
+
+@mcp.tool()
+def logical_report(directory: str) -> dict:
+    """Read the verified experiment report, including diagnostics and independent comparison."""
+    return _service().logical.report(directory)
 
 
 @mcp.tool()

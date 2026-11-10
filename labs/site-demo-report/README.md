@@ -1,12 +1,14 @@
 # Lab: public pg_diag sample report (`site-demo-5m-30s`)
 
-Everything needed to rebuild the showcase report published from the `report_trace` lab on
+Scripts and reference inputs for the showcase report produced in the `report_trace` lab on
 2026-09-12: a 5-minute snapshot window (interval 30 s) over ten pg_workload profiles at scale 3.0
 on the `pg-trace-20260905` stand (PostgreSQL 18.4, primary 2 CPU / 4 GiB with a synchronous
 standby and a logical subscriber), with staged maintenance activity and real incidents, collected
 by pg_diag in remote (SSH) mode through pg_play, then anonymized, validated, rendered and audited.
 
-One command, about 12 minutes:
+After preparing the stand and data below, run from the pg_play checkout. The
+reference run took about 12 minutes; build, initialization and data loading are
+additional work:
 
 ```bash
 cd pg_play
@@ -15,9 +17,36 @@ cd pg_play
 ```
 
 The last line of the output is the path of the public HTML:
-`<root>/experiments/<tag>/public/<tag>.html` (next to it `<tag>.json`, `-items.tsv`, `-audit.json`,
-`-browser.json`, `-plan.png` and `run-summary.json`). The originals collected by pg_play stay in
-`<root>/experiments/<tag>/`.
+`<root>/experiments/<tag>/public/<tag>.html` (next to it `<tag>.json`, `-items.tsv`,
+`-audit.json`, `-browser.json` and `-plan.png`). The originals collected by pg_play
+and `run-summary.json` stay in `<root>/experiments/<tag>/`. These are local output files: the finalization step
+does not upload or deploy a website.
+
+## Prerequisites and reproducibility
+
+Use a dedicated Linux/Docker laboratory host, the pg-play development environment
+with its core components, local PostgreSQL clients, and `asyncpg`. Finalization
+also needs Playwright with Chromium in the selected Python environment. Configure
+`publish.playwright_python` explicitly if that environment is separate; the
+default sibling-project path is a developer convenience, not a package dependency.
+
+The script expects an existing running stand, initialized workload project,
+installed datasets, lab objects and credentials. `--dry-run` avoids the workload
+and incident mutations, but connects for preflight and writes the manifest, plan
+and local credential files. It is not a filesystem read-only command.
+
+Versions are not pinned by this lab. PostgreSQL 18.4, item counts, timing, database
+sizes and plan counts below describe the reference run. Current component content,
+images and host load can change them. Retain component versions and image IDs with
+new evidence and review `expected` thresholds before calling a rerun equivalent.
+
+The current manifest generator supplies `configurator_inputs` but does not include
+`spec.stand.parameter_overrides`. `setup/observability-overrides.json` is not
+automatically merged into the experiment: preparation reads only its
+`statement_timeout` and `temp_file_limit` entries. pg-play can therefore replace
+overlapping stand YAML parameters with a newly generated candidate. Inspect the
+dry-run plan for the intended auto_explain, logging and archive settings before
+running; the historical observation counts are not guaranteed by these scripts.
 
 ## What the run does
 
@@ -64,6 +93,8 @@ systemd / sudoers / backup checks inside Docker.
 
 * `run_report.py --force` archives an existing `experiments/<tag>` (plus stop file and evidence) as
   `<tag>-attemptN` and reuses the tag; otherwise pick another `--tag`.
+  Do this only after the previous worker and workload have stopped. The archive
+  is retained evidence, not a relocated resumable run; prefer a new tag.
 * `run_report.py --skip-finalize` keeps the raw artifact only; `finalize.py --tag …` publishes later.
 * `run_report.py --no-staged-activity` collects the plain workload without incidents.
 * `workload_ctl.py start|stop` drives the workload manually with pg_play's arguments (pg_play refuses
@@ -71,12 +102,19 @@ systemd / sudoers / backup checks inside Docker.
 
 ## Preparing the stand from scratch
 
-1. Bring the stand up from the pg_stand project: `cd <root>/stand && pg-stand up --config configs/trace.yaml`
-   (the copy of the config is `setup/stand-trace.yaml`; postgres parameters come from
-   `setup/configurator-parameters.json` and the lab observability overrides
-   `setup/observability-overrides.json` — auto_explain everything, `log_min_duration_statement=100ms`,
-   `deadlock_timeout=100ms`, `archive_command` that fails while `/tmp/pg-trace-archive-fail` exists).
-   The pg_play stand step also does this when the manifest's stand is down.
+1. Create the lab root with `stand/configs`, `setup` and `workload` directories.
+   Copy `setup/stand-trace.yaml` to `<root>/stand/configs/trace.yaml` and
+   `setup/configurator-parameters.json` to `<root>/setup/configurator-parameters.json`.
+   Initialize `<root>/workload` with `pg-workload init --directory <root>/workload`.
+   From `<root>/stand`, bring up the dedicated stand with
+   `pg-stand --config configs/trace.yaml up`
+   using the copied stand YAML. The two JSON files preserve reference parameters
+   and observability values; this command does not merge them. In particular,
+   the historical archiver-failure demonstration needs the recorded
+   `archive_command`, not just the marker file created by the incident script.
+   The normal lab preflight requires this stand to be running already. The
+   configuration JSON is also required by `lab.pg_play_context()`; copying it
+   does not make it the reviewed pg-play candidate. See the override limitation above.
 2. `prepare_stand.py --prepare-db --scale 3.0` installs the profiles with the exact `pg-workload`
    arguments pg_play uses (database-level timeouts lifted for the bulk load), applies
    `setup/site-lab-users.sql` (12 `lab_*` roles, schema `lab` with RLS, column grants, default
@@ -88,6 +126,9 @@ systemd / sudoers / backup checks inside Docker.
    12 GiB free on the lab root filesystem.
 
 ## Gotchas that cost earlier attempts
+
+The following budgets and observations describe the reference component versions;
+check the installed pg-diag content and current stand settings when reproducing them.
 
 * pg_diag has a 1 s budget per SQL item; `indexes.redundant_indexes` and `storage_vacuum.sequence_status`
   carry `timeout_ms: 2000` — keep `many_objects` at two schemas and `pss_overflow` small on 2 CPUs.

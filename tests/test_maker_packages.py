@@ -207,8 +207,6 @@ def test_cli_and_mcp_use_native_publication_adapter(tmp_path, monkeypatch, capsy
 
 def test_real_maker_initializes_generic_projects_and_reports_identity(tmp_path):
     runner = ComponentRunner()
-    if not runner.available("pg_maker"):
-        pytest.skip("optional pg-maker extra is not installed")
     service = PgPlayService(runner)
     project = tmp_path / "database"
     service.maker_init(str(project))

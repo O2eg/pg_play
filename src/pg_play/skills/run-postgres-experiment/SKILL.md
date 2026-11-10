@@ -11,7 +11,7 @@ Use only the high-level `pg_play` MCP tools. Do not construct raw component shel
 
 1. Read the requested experiment manifest. If creating or changing one, follow [references/manifest.md](references/manifest.md).
 2. Call `validate_experiment`. Stop on any validation error; do not weaken component checks.
-3. Call `plan_experiment`. Present the required stand action, configuration artifact hash, optional benchmark plan, selected workload profiles, diagnostic mode, warnings, and `plan_hash`.
+3. Call `plan_experiment`. Present the required stand action, configuration artifact hash, optional benchmark plan, selected workload profiles, diagnostic mode, component warnings/advisories, and `plan_hash`.
 4. Before mutation, ensure the user authorized running the experiment and that the plan is not blocked.
 5. Choose a new explicit `run_id`. A run id is permanently bound to one manifest and plan.
 6. Call `start_experiment` with the exact returned `plan_hash`. Never substitute a stale hash or hold a synchronous MCP call open.

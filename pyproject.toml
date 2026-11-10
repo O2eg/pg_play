@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-play"
-version = "0.5.0"
+version = "0.6.0"
 description = "MCP orchestrator for reproducible PostgreSQL performance experiments"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -22,7 +22,6 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Topic :: Database",
@@ -32,18 +31,20 @@ dependencies = [
   "mcp>=1.28,<2",
   "pg-configurator>=0.11.1,<1",
   "pg-converter>=2.0b2,<3",
-  "pg-diag>=0.18.4,<1",
+  "pg-diag>=0.19.1,<1",
+  "pg-logical-repl>=0.2.0,<0.3",
+  "pg-maker>=0.6.0,<1",
   "pg-perf-bench>=0.7.4,<1",
-  "pg-stand>=0.2.4,<1",
+  "pg-stand>=0.3.0,<1",
   "pg-workload>=0.6.1,<1",
   "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]
-maker = ["pg-maker>=0.5.0,<1"]
 dev = [
   "build>=1.2,<2",
   "pytest>=8.3,<9",
+  "packaging>=24,<27",
   "ruff>=0.12,<1",
   "twine>=6,<7",
 ]
@@ -75,12 +76,24 @@ pg_play = [
   "skills/*/references/*.md",
 ]
 
+[tool.setuptools.data-files]
+"share/doc/pg-play" = ["README.md", "CHANGELOG.md"]
+"share/doc/pg-play/docs" = [
+  "docs/agent-client-setup.md",
+  "docs/pg_converter-integration.md",
+  "docs/pg_logical_repl-integration.md",
+  "docs/pg_maker-integration.md",
+  "docs/user-scenarios.md",
+]
+"share/doc/pg-play/examples/logical" = ["examples/logical/scenario.yaml"]
+"share/doc/pg-play/examples/maker" = ["examples/maker/my-feature-stand.yaml"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]

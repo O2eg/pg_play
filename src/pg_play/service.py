@@ -78,6 +78,21 @@ _RESUMABLE_STEP_POLICIES = {
 }
 _REQUIRED_STEP_ARTIFACTS = {"benchmark", "diagnostics", "maker"}
 _REQUIRED_COMPONENT_COMMANDS = {
+    "pg_logical_repl": {
+        "capabilities",
+        "inspect-config",
+        "check",
+        "plan",
+        "prepare",
+        "start",
+        "run",
+        "status",
+        "events",
+        "verify",
+        "report",
+        "abort",
+        "cleanup",
+    },
     "pg_maker": {
         "validate",
         "env prepare",
@@ -144,6 +159,12 @@ class PgPlayService:
     def __init__(self, runner: ComponentRunner | None = None) -> None:
         self.runner = runner or ComponentRunner()
         self._execution_context: _ExecutionContext | None = None
+
+    @cached_property
+    def logical(self):
+        from pg_play.logical_runs import LogicalRunManager
+
+        return LogicalRunManager(self.runner)
 
     @cached_property
     def maker(self):
@@ -473,15 +494,11 @@ class PgPlayService:
                 "pg_workload",
                 "pg_diag",
                 "pg_perf_bench",
+                "pg_maker",
+                "pg_logical_repl",
             ]
         )
         unknown = sorted(set(components).difference(_REQUIRED_COMPONENT_COMMANDS))
-        if (
-            component is None
-            and isinstance(self.runner, ComponentRunner)
-            and self.runner.available("pg_maker")
-        ):
-            components.append("pg_maker")
         if unknown:
             raise OrchestrationError("unknown component(s): " + ", ".join(unknown))
         result = {}

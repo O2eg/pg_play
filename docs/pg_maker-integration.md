@@ -1,9 +1,12 @@
 # pg_maker and pg_play
 
-Install the optional integration from PyPI:
+See the [build and extension scenario](user-scenarios.md#5-test-a-postgresql-patch-build-or-extension)
+for the component flow and intended uses.
+
+Starting with pg-play 0.6.0, the standard installation includes pg-maker:
 
 ```bash
-python -m pip install --upgrade 'pg-play[maker]'
+python -m pip install --upgrade pg-play
 pg-play capabilities --component pg_maker
 ```
 
@@ -13,10 +16,10 @@ For local pg_maker development, install its checkout into the same environment:
 pg_play/.venv/bin/python -m pip install -e ./pg_maker
 ```
 
-The extra requires `pg-maker>=0.5.0,<1`. Commands are capability-checked before
+pg-play requires `pg-maker>=0.6.0,<1`. Commands are capability-checked before
 execution, since a version number alone does not identify every supported workflow.
-Runtime preflight needs maker's `runtime check` command; use a maker release or
-source checkout exposing it. CI tests against the current maker source checkout,
+Runtime preflight uses maker's `runtime check` command, included in this minimum
+version. pg-maker can also be installed and used independently of pg-play. CI tests against the current maker source checkout,
 including the wheel installation smoke test. Publish a required maker change first.
 
 ## Adapter contract
@@ -83,17 +86,44 @@ Ordinary run cleanup is available through pg_maker's CLI/Python API; development
 sessions have the separate `maker_dev_prune` operation.
 
 The CLI exposes `pg-play maker validate|prepare|resolve|plan|start|status|events|
-cancel|resume|artifacts|export|runtime-check|runtime-plan|runtime-start`. After preparation and
-resolution:
+cancel|resume|artifacts|export|runtime-check|runtime-plan|runtime-start` and the
+development/package commands described below. Initialize and inspect editable
+inputs first:
 
 ```bash
-pg-play maker plan build.lock.json --goal package > reviewed-maker.json
+pg-play maker init ./maker-project
+pg-play maker config-show ./maker-project/build.yaml
+pg-play maker validate ./maker-project/build.yaml
+pg-play maker prepare ./maker-project/build.yaml \
+  --output ./maker-project/environments.json --input-store ./maker-project/inputs \
+  --operations ./maker-operations --operation-id prepare-01
+pg-play maker status ./maker-operations/prepare-01
+```
+
+Edit the feature and runtime dependency recipe before preparation if a stand
+runtime is required. Wait for preparation to succeed before resolving:
+
+```bash
+pg-play maker resolve ./maker-project/build.yaml \
+  --environments ./maker-project/environments.json \
+  --output ./maker-project/build.lock.json --input-store ./maker-project/inputs \
+  --operations ./maker-operations --operation-id resolve-01
+pg-play maker status ./maker-operations/resolve-01
+```
+
+Wait for resolution to succeed before planning. Select the actual variant and
+prepared runtime image from the returned artifacts; the names/hashes below are
+examples, not values to copy unchanged:
+
+```bash
+pg-play maker plan ./maker-project/build.lock.json --goal package > reviewed-maker.json
 # Before an experiment, ask maker to verify the selected variant's prerequisites:
 pg-play maker runtime-check reviewed-maker.json \
   --variant my-feature.debian13-x64.candidate --base-image sha256:PREPARED_IMAGE_ID
 pg-play maker start reviewed-maker.json --plan-hash SHA256_FROM_REVIEWED_PLAN \
   --operations ./maker-operations --operation-id candidate
 pg-play maker status ./maker-operations/candidate
+# Wait for a successful terminal build before reading/exporting its artifacts.
 pg-play maker artifacts ./maker-operations/candidate
 ```
 
@@ -260,5 +290,6 @@ No upload is implied by starting a performance experiment.
 4. Documentation goals are `doc-source`, `translations`, `translated-docs` and
    `docs`. Translation bundles are checked for source identity and completeness;
    model credentials and calls remain outside maker.
-5. Export results before cleanup. Database build tests require an explicit
-   `run_db_tests` selection; a quick successful build does not qualify a DB release.
+5. Export results before cleanup. Database build tests follow the locked policy
+   unless explicitly overridden with `--run-db-tests` or `--skip-db-tests`.
+   A quick successful build does not qualify a DB release.

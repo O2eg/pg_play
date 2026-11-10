@@ -7,7 +7,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,7 @@ RESUMABLE_STATES = frozenset({"failed", "cancelled", "interrupted"})
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def write_text(path: Path, value: str, *, mode: int = 0o600) -> None:

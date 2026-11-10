@@ -275,11 +275,6 @@ def test_phase_preserves_unverified_qualification_and_resumes_failed_runtime(tmp
 
 
 def test_real_machine_capabilities_round_trip():
-    import shutil
-    import sys
-
-    if not shutil.which("pg-maker") and not Path(sys.executable).with_name("pg-maker").is_file():
-        pytest.skip("optional pg-maker extra is not installed")
     result = PgPlayService(ComponentRunner()).component_capabilities("pg_maker")["pg_maker"]
     assert isinstance(result["secret_policy"], dict)
     assert result["commands"]["runtime build"]["accepts_plan_hash"]

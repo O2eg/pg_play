@@ -19,52 +19,67 @@ is `pg-play-mcp`. The import package and GitHub repository are named `pg_play`.
   database, then validates and compares benchmark artifacts and TPS evidence.
 - Plans and runs reviewed `pg_converter` packets against an exact alias set
   through a detached, auditable, sequential workflow.
-- Installs every component while preserving their independent use.
+- Installs all eight component distributions while preserving
+  their independent use.
 - Optionally builds PostgreSQL through pg_maker, records package/image provenance,
   and runs the resulting immutable image in pg_stand. See
   [the maker workflow and interface contract](docs/pg_maker-integration.md).
+- Optionally orchestrates logical migration experiments with `pg-logical-repl`:
+  durable controllers, DDL delivery, paired diagnostics, independent verification,
+  planned recovery and cutover. See [the logical integration guide](docs/pg_logical_repl-integration.md).
 
-The independently installable components are:
+The eight independently installable components are listed below. Distribution
+and CLI names use hyphens; Python packages, repository names and component IDs
+use underscores (for example, `pg-maker` and `pg_maker`).
 
-- [`pg_stand`](https://github.com/O2eg/pg_stand) — reproducible PostgreSQL
-  stands;
-- [`pg_workload`](https://github.com/O2eg/pg_workload) — profile-driven backend
-  activity emulation;
-- [`pg_diag`](https://github.com/O2eg/pg_diag) — diagnostic JSON and HTML
-  artifacts;
-- [`pg_configurator`](https://github.com/O2eg/pg_configurator) — version-aware
-  PostgreSQL configuration candidates;
-- [`pg_converter`](https://github.com/O2eg/pg_converter) — reviewed SQL/Python
-  packet deployment and migration operations;
-- [`pg_perf_bench`](https://github.com/O2eg/pg_perf_bench) — controlled pgbench
-  execution and environment evidence.
+| Component | Role | Installation with pg-play |
+| --- | --- | --- |
+| [pg-stand](https://github.com/O2eg/pg_stand) | PostgreSQL containers, topology, storage and credentials | Core |
+| [pg-workload](https://github.com/O2eg/pg_workload) | Datasets and scheduled backend activity | Core |
+| [pg-diag](https://github.com/O2eg/pg_diag) | Database/OS diagnostics and JSON/HTML reports | Core |
+| [pg-configurator](https://github.com/O2eg/pg_configurator) | Version-aware PostgreSQL configuration candidates | Core |
+| [pg-converter](https://github.com/O2eg/pg_converter) | Reviewed SQL/Python packets against selected database aliases | Core |
+| [pg-perf-bench](https://github.com/O2eg/pg_perf_bench) | Controlled pgbench measurements and benchmark comparisons | Core |
+| [pg-maker](https://github.com/O2eg/pg_maker) | PostgreSQL builds, extensions, patches, package evidence and publication | Core |
+| [pg-logical-repl](https://github.com/O2eg/pg_logical_repl) | Native logical replication, supported DDL delivery, verification and migration recovery | Core |
+
+## Documentation
+
+- [User scenarios](docs/user-scenarios.md): tasks, component flows and ASCII diagrams.
+- [Maker integration](docs/pg_maker-integration.md): builds, runtime images and publication.
+- [Logical replication integration](docs/pg_logical_repl-integration.md): copy, DDL, verification and recovery.
+- [Converter integration](docs/pg_converter-integration.md): reviewed packet execution.
+- [Agent client setup](docs/agent-client-setup.md): MCP and the six packaged skills.
+- [Changelog](CHANGELOG.md): release history; 0.6.0 is currently unreleased.
 
 ## How it works
 
 ```text
-                         pg_play
-                            |
-              +-------------+-------------+
-              |                           |
-              v                           |
-      pg_configurator                     |
-              | versioned config          |
-              v                           |
-          pg_stand ------------------------+
-              |
-              v
-                         PostgreSQL stand
-                 /          /      \          \
-                v          v        v          v
-       pg_converter  pg_workload  pg_perf_bench  pg_diag
-                |          |        |             |
-          packet run       |  benchmark report   |
-                +----------+------ run -----------+----> diagnostic report
+                   pg-play: plan -> run -> evidence
                                   |
-                  change one reviewed input
+                    +-------------+-------------+
+                    |                           |
+                pg-maker                 pg-configurator
+              packages/image                settings
+                    |                           |
+                    +--------> pg-stand <-------+
                                   |
-                                  +----> rebuild, rerun, compare
+                                  v
+             pg-converter ---> PostgreSQL <--- pg-workload
+                                  ^
+                                  +----------> pg-perf-bench
+                                  |
+                                  +----------> pg-diag -> JSON / HTML
+                                  |
+                source DB == pg-logical-repl ==> target DB
+                              copy + DML +
+                              supported DDL
 ```
+
+These are available workflows, not one unconditional pipeline. A standard
+experiment runs the optional benchmark before workload diagnostics. Converter
+packets and logical migrations have separate reviewed plans. Live diagnostics
+and configuration review can use existing servers without pg-stand.
 
 The control layers are deliberately separate:
 
@@ -82,47 +97,77 @@ component adapters    argv arrays + strict JSON envelopes
       |
       +---- pg_configurator
       +---- pg_converter
-      +---- pg_maker (optional)
+      +---- pg_maker
+      +---- pg_logical_repl
       +---- pg_stand
       +---- pg_workload
       +---- pg_diag
       `---- pg_perf_bench
 ```
 
-MCP exposes typed workflow operations. The optional `maker_dev_exec` tool runs
+MCP exposes typed workflow operations. The `maker_dev_exec` tool runs
 an argument vector inside a private copy of a pg_maker build container; it does
-not provide a host shell or a database SQL console. Each component remains
-pleasant to use directly: orchestration flags
-are hidden from its primary help and its normal human output is unchanged.
+not provide a host shell or a database SQL console. Component CLIs remain
+independently usable. The logical adapter explicitly selects
+`--contract pg_play/component/v2`; native pg-logical-repl machine output has a
+different contract.
 
 ## Installation
+
+Use Linux and Python 3.11 or newer. Managed stands and maker builds need Docker
+Engine access; stand credential generation also needs OpenSSL and `ssh-keygen`.
+Benchmark/workload execution needs PostgreSQL client tools on the runner host.
+Logical migration requires `psql`, `pg_dump` and `pg_restore` matching the
+source/target major. Remote OS diagnostics need SSH access and verified host
+keys. Python installation does not provision these system dependencies.
 
 ```bash
 python -m pip install pg-play
 ```
 
-This installs compatible versions of all six component distributions. The minimum
-versions are `pg-configurator>=0.11.1`, `pg-diag>=0.18.4`, `pg-stand>=0.2.4`,
-`pg-workload>=0.6.1`, `pg-perf-bench>=0.7.4`, and `pg-converter>=2.0b2`.
-Newer compatible versions are allowed; the major-version bounds are declared in
-`pyproject.toml`. To update an existing installation and its components together:
+Starting with pg-play 0.6.0, this installs all eight component distributions.
+The minimum versions are:
+
+| Distribution | Required version |
+| --- | --- |
+| pg-configurator | `>=0.11.1,<1` |
+| pg-converter | `>=2.0b2,<3` |
+| pg-diag | `>=0.19.1,<1` |
+| pg-logical-repl | `>=0.2.0,<0.3` |
+| pg-maker | `>=0.6.0,<1` |
+| pg-perf-bench | `>=0.7.4,<1` |
+| pg-stand | `>=0.3.0,<1` |
+| pg-workload | `>=0.6.1,<1` |
+
+The wheel and source distribution include the README, changelog, public guides
+and example configurations. Installed documents retain their relative layout
+under `share/doc/pg-play`. Locate them in the active environment with:
+
+```bash
+python -c 'import sysconfig; print(sysconfig.get_path("data") + "/share/doc/pg-play")'
+```
+
+Each component remains a separate Python distribution with its own CLI and
+release cycle. It can be installed independently, for example
+`python -m pip install pg-stand` or `python -m pip install pg-logical-repl`.
+Components do not depend on the pg-play orchestrator; their own dependencies
+still apply, such as pg-perf-bench using pg-diag.
+
+Newer compatible versions are allowed. To update an existing installation and
+its components together:
 
 ```bash
 python -m pip install --upgrade --upgrade-strategy eager pg-play
+pg-play capabilities
 ```
 
-To include PostgreSQL builds, documentation and Git development sessions, install
-the optional maker component:
-
-```bash
-python -m pip install --upgrade --upgrade-strategy eager 'pg-play[maker]'
-pg-play capabilities --component pg_maker
-```
-
-This adds `pg-maker>=0.5.0,<1`. Each workflow also checks the installed maker's
-capabilities; runtime preflight requires `runtime check`. See the
-[maker integration guide](docs/pg_maker-integration.md)
-for CLI, Python and MCP operations and [the changelog](CHANGELOG.md) for release notes.
+Maker and logical replication are required dependencies; installation extras
+for those components are not provided. Workflows still check component
+capabilities before execution. Maker runtime preflight requires `runtime check`,
+included in the required 0.6.0 release. See the
+[maker integration guide](docs/pg_maker-integration.md),
+[logical integration guide](docs/pg_logical_repl-integration.md) and
+[changelog](CHANGELOG.md).
 
 The components remain available through their own commands:
 
@@ -133,6 +178,8 @@ pg-diag --help
 pg-configurator --help
 pg-converter --help
 pg-perf-bench --help
+pg-maker --help
+pg-logical-repl --help
 ```
 
 ## Experiment manifest
@@ -140,6 +187,12 @@ pg-perf-bench --help
 `pg_play/v1` is strict: unknown fields, secret-bearing configurator inputs,
 missing projects, invalid profile names, and invalid diagnostic windows are
 errors.
+
+Initialize `stand` and `workload` as shown in the CLI flow below, and save this
+example as `experiment.yaml` in their parent directory. Its CPU/RAM values match
+the bundled PG18 single-node profile (1 CPU, 1 GiB). When changing stand resources
+or the PostgreSQL major, update the configurator inputs to match. This is a small
+laboratory example; the workload guard checks the host's available resources.
 
 ```yaml
 api_version: pg_play/v1
@@ -149,7 +202,7 @@ metadata:
 spec:
   artifact_root: .pg_play/experiments/pg18-mixed-baseline
   stand:
-    config: ../pg_stand/configs/single.yaml
+    config: ./stand/configs/single.yaml
     project: ./stand
     # Optional values applied after pg_configurator recommendations:
     # parameter_overrides:
@@ -157,8 +210,8 @@ spec:
     #   auto_explain.log_format: json
   configurator:
     inputs:
-      db_cpu: 4
-      db_ram: 8Gi
+      db_cpu: 1
+      db_ram: 1Gi
       pg_version: "18"
       db_duty: mixed
   workload:
@@ -200,7 +253,7 @@ spec:
       ARG_PGBENCH_PATH -T 60 -c ARG_PGBENCH_CLIENTS -j ARG_PGBENCH_CLIENTS
       -h ARG_PG_HOST -p ARG_PG_PORT -U ARG_PG_USER ARG_PG_DATABASE
     command_timeout: 120
-    system_metrics_interval: 1
+    system_metrics_interval: 5
     drop_os_caches: false
     collect_pg_logs: true
   phases:
@@ -224,8 +277,10 @@ command templates. `pg_play` includes the selected profile and scale in the
 reviewed benchmark plan. `pg_perf_bench` selects the newest local pgbench/psql
 pair automatically; optional `pgbench_path` and `psql_path` overrides are
 accepted only when they are not older than the newest installed clients. The
-pg_diag OS sampler runs during every benchmark window; use
-`system_metrics_interval` to control its cadence and
+pg_diag OS sampler runs on the benchmark runner host during every benchmark
+window. Set `system_metrics_interval: 5` explicitly for compatibility with the
+minimum supported pg-perf-bench release, which rejects shorter intervals;
+pg-play's current implicit default is still 1 second. Use
 `system_metrics_duration` only when a custom command has no pgbench `-T` or
 `--time` option.
 
@@ -261,17 +316,22 @@ The packaged JSON Schema is available as the MCP resource
 Secrets are the deliberate exception: `pg_workload` continues to accept
 passwords only through environment/passfile mechanisms.
 
-All six components use the same hidden orchestration options:
+All eight component adapters use the common orchestration options:
 `--machine`, `--request-id`, and `--component-capabilities`. Their advertised
-`machine_interface` object makes these names machine-verifiable.
+`machine_interface` object makes these names machine-verifiable. The logical
+adapter also supplies the contract selection described above.
 
 ## Human CLI
 
-The `pg-play` CLI contains only complete experiment operations:
+The `pg-play` CLI exposes experiment operations and separate maker, converter
+and logical workflows. Live-server capture and configuration review are exposed
+through MCP and `PgPlayService`, not dedicated CLI subcommands.
 
 | Command | Effect |
 | --- | --- |
 | `capabilities` | Read installed component contracts |
+| `maker ...` | Build, inspect, develop, export and publish through the maker adapter |
+| `logical ...` | Plan and monitor logical migration operations and experiments |
 | `plan-converter-run --project DIR --config FILE --packet NAME` | Resolve packet content and exact database aliases without connecting |
 | `start-converter-run PLAN.json --plan-hash HASH --out DIR --run-id ID` | Start an unchanged packet plan in a detached worker |
 | `converter-run-status RUN_DIR` | Read durable packet-run state and detect a lost worker |
@@ -298,6 +358,7 @@ Typical flow:
 
 ```bash
 mkdir -p stand workload
+pg-stand init --directory stand
 pg-workload init --directory workload
 
 pg-play validate experiment.yaml
@@ -311,14 +372,28 @@ pg-play start experiment.yaml \
 
 pg-play status experiment.yaml --run-id baseline-001
 pg-play events experiment.yaml --run-id baseline-001 --after-sequence 0
-pg-play inspect-report .pg_play/experiments/pg18-mixed-baseline/baseline-001/report.json
+# After the run reaches succeeded or partial, inspect its diagnostic artifact:
+pg-play inspect-report .pg_play/experiments/pg18-mixed-baseline/baseline-001/pg18-mixed-diagnostics.json
 ```
 
 `start` recalculates the plan and rejects a stale hash. A `run_id` remains
 permanently bound to the same manifest and plan. Use `resume` with that same id
 for a verified failed, cancelled, or interrupted attempt; use a new id when the
 manifest or plan changes. `run` retains the old synchronous behavior for
-scripts that explicitly need it.
+scripts that explicitly need it. Plan/start are separate calls: do not start if
+validation fails or the plan is blocked. Hashes such as `sha256:...` in examples
+are placeholders for the full hash returned by the corresponding planner.
+
+CLI operations print JSON on success. Exit code 0 means the request completed;
+a status request can still return a failed, blocked or interrupted run. Inspect
+the returned state and evidence, not just the process exit code. Caught input or
+operation errors print to stderr and return 2.
+
+Teardown is explicit. Wait for active experiments to finish or cancel them first,
+then use `pg-play teardown experiment.yaml`. It stops the workload and removes
+the selected stand containers while retaining database storage. Add
+`--clear-stand-data` only to discard that stand's data. Keep run artifacts and
+project credentials for inspection or recovery.
 
 ### Reviewed pg_converter packet runs
 
@@ -351,7 +426,7 @@ Credentials stay in the protected configuration file. Placeholder and
 configuration-override values are accepted only through protected JSON files
 and are represented in the plan by names and hashes, not values.
 See the
-[pg_converter integration runbook](https://github.com/O2eg/pg_play/blob/main/docs/pg_converter-integration.md)
+[pg_converter integration runbook](docs/pg_converter-integration.md)
 for the durable directory, cancellation, and recovery contracts.
 
 ## MCP server
@@ -362,54 +437,38 @@ Start the stdio server with:
 pg-play-mcp
 ```
 
-Configure an MCP client to launch that executable with no shell wrapper. The
-server exposes only:
+Configure an MCP client to launch that executable with no shell wrapper. See
+[Agent client setup](docs/agent-client-setup.md) for Codex CLI, Claude Code,
+Hermes Agent, Kimi Code CLI, Gemini CLI and OpenCode.
 
-See [Agent client setup](https://github.com/O2eg/pg_play/blob/main/docs/agent-client-setup.md)
-for concise MCP and Agent Skills configuration examples for Codex CLI, Claude
-Code, Hermes Agent, Kimi Code CLI, Gemini CLI, and OpenCode.
+The server registers the following tools. Optional tools are registered even
+when their component is absent; install the corresponding extra before use.
 
-- `component_capabilities`
-- `plan_converter_run`
-- `start_converter_run`
-- `converter_run_status`
-- `converter_run_events`
-- `cancel_converter_run`
-- `plan_live_diagnostics`
-- `start_live_diagnostics`
-- `live_diagnostics_status`
-- `live_diagnostics_events`
-- `cancel_live_diagnostics`
-- `plan_configuration_review`
-- `collect_configuration_facts`
-- `generate_configuration_candidate`
-- `compare_configuration_candidate`
-- `validate_experiment`
-- `plan_experiment`
-- `start_experiment`
-- `run_experiment`
-- `experiment_status`
-- `experiment_events`
-- `cancel_experiment`
-- `resume_experiment`
-- `inspect_diagnostic_report`
-- `compare_diagnostic_reports`
-- `inspect_benchmark_report`
-- `compare_benchmark_reports`
-- `benchmark_profiles`
-- `benchmark_join_tasks`
-- `join_benchmark_reports`
-- `teardown_experiment`
+| Workflow | MCP tools |
+| --- | --- |
+| Component discovery | `component_capabilities` |
+| Experiments | `validate_experiment`, `plan_experiment`, `start_experiment`, `run_experiment`, `experiment_status`, `experiment_events`, `cancel_experiment`, `resume_experiment`, `teardown_experiment` |
+| Reports and benchmarks | `inspect_diagnostic_report`, `compare_diagnostic_reports`, `inspect_benchmark_report`, `compare_benchmark_reports`, `benchmark_profiles`, `benchmark_join_tasks`, `join_benchmark_reports` |
+| Live diagnostics | `plan_live_diagnostics`, `start_live_diagnostics`, `live_diagnostics_status`, `live_diagnostics_events`, `cancel_live_diagnostics` |
+| Configuration review | `plan_configuration_review`, `collect_configuration_facts`, `generate_configuration_candidate`, `compare_configuration_candidate` |
+| Converter packets | `plan_converter_run`, `start_converter_run`, `converter_run_status`, `converter_run_events`, `cancel_converter_run` |
+| Logical replication | `logical_inspect`, `logical_plan`, `logical_start`, `logical_status`, `logical_events`, `logical_stop_controller`, `logical_resume_controller`, `logical_report` |
+| Maker builds and runtime | `maker_validate`, `maker_init`, `maker_config_show`, `maker_package_names`, `maker_prepare`, `maker_resolve`, `maker_plan`, `maker_start`, `maker_status`, `maker_events`, `maker_cancel`, `maker_resume`, `maker_artifacts`, `maker_export`, `maker_runtime_check`, `maker_runtime_plan`, `maker_runtime_start` |
+| Maker development | `maker_dev_open`, `maker_dev_status`, `maker_dev_patch`, `maker_dev_build`, `maker_dev_explain`, `maker_dev_exec`, `maker_dev_pin`, `maker_dev_prune`, `maker_changes_workspace`, `maker_changes_validate`, `maker_changes_export` |
+| Maker extensions and publication | `maker_extension_init`, `maker_extension_prepare`, `maker_extension_plan`, `maker_extension_build`, `maker_publish_plan`, `maker_publish_run` |
 
 An agent should validate, plan, show the mutation to the user, and then call
 `start_experiment` with the unchanged hash and a new run id. It can poll
 `experiment_status` and page through `experiment_events` without holding one
-long MCP request open. The implementation uses the stable
-[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) 1.x line
-and intentionally excludes the 2.x prerelease API.
+long MCP request open. The dependency range for the
+[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) is
+`mcp>=1.28,<2`; the 2.x API is outside the supported dependency range.
 
 The durable schemas are also exposed as `pgplay://run-state-schema` and
-`pgplay://run-event-schema`.
+`pgplay://run-event-schema`. Additional resources are
+`pgplay://component-contract` and `pgplay://configuration-facts-schema`.
+Core experiment schemas do not describe maker-owned operations or logical run
+state; use each workflow's integration guide and returned schema identifiers.
 
 For packet deployment, an agent must call `plan_converter_run`, show the exact
 packet/source hashes, target aliases, Python-step risk, and mutation flags to
@@ -438,6 +497,25 @@ Skills contain procedural guidance; they do not reimplement orchestration or
 invoke raw component commands. Skill registration is agent-runtime-specific,
 so installing a Python wheel does not automatically activate them in every
 agent product.
+
+## Comparing evidence
+
+`compare-reports` compares diagnostic summary counts and checks artifact/content
+identity, server version and collection modes. It does not calculate per-query
+performance changes or verify workload, hardware, topology, observation-window
+or seed equality. Check those inputs in the run plans and examine the report
+items before drawing conclusions.
+
+`compare-benchmark-reports` checks iteration axes/values, methodology, server
+version and environment identity. It reports configuration changes separately
+and still returns deltas when `comparability.comparable` is false. A successful
+command alone does not establish a valid comparison. The mean TPS delta is an
+aggregate of the reported measurements, not a statistical significance test.
+
+For deliberate configuration, CPU, memory, storage, OS or PostgreSQL-version
+changes, select a task from `benchmark-join-tasks` and use
+`join-benchmark-reports`. JOIN enforces the controls for that task and rejects
+incompatible inputs. See the [comparison scenario](docs/user-scenarios.md#2-compare-configuration-or-capacity).
 
 ## Live-server incident diagnostics
 
@@ -547,6 +625,7 @@ Resume is intentionally conservative:
 
 | Step | Safe resume rule |
 | --- | --- |
+| maker (when configured) | Verify the locked plan, reuse completed build/runtime operations, or explicitly resume their native workers |
 | stand | Recalculate a read-only pg_stand plan and reconcile only the reviewed desired configuration |
 | benchmark | Retry only through pg_perf_bench's idempotent dedicated-database reset |
 | prepare database | Retry the declarative database preparation operation |
@@ -591,14 +670,19 @@ unknown step or changed core artifact blocks recovery.
 - `pg-converter run` independently verifies the reviewed component plan hash,
   including the exact alias set, packet source tree, and file-based inputs.
 - Subprocesses receive argument arrays with `shell=False`.
-- Password-bearing CLI arguments and password-bearing machine output are
-  rejected.
+- The adapter rejects `--password` and `--show-password` arguments; workflow
+  validators restrict credential inputs to their supported references. Envelope
+  validation checks structure, not arbitrary secret content. Reports, SQL/log
+  text, component errors and exports may contain sensitive data; review and
+  redact artifacts before sharing them. There is no universal output scrubber.
 - Detached component cleanup verifies PID start time, process ownership, and
   executable identity before signaling a process group.
 - A failed cleanup cannot hide the original collection failure; a cleanup
   failure after successful diagnostics marks the run partial.
 - `pg_diag` partial artifacts are retained and explicitly marked partial.
-- `pg_play` never automatically destroys a stand.
+- Normal experiment completion retains the stand. A reviewed stand action can
+  recreate containers to apply configuration; `teardown` explicitly removes
+  them and deletes storage only with `--clear-stand-data`.
 
 Remote OS collection uses strict SSH host verification. For a newly created
 local `pg_stand`, `pg_play` captures its host key into the run directory before
@@ -607,7 +691,7 @@ run evidence.
 
 ## Current scope
 
-The first contract covers one configuration candidate, one managed stand,
+The standard `pg_play/v1` manifest covers one configuration candidate, one managed stand,
 an optional controlled benchmark, selected workload profiles, a one-shot or
 snapshots report, and deterministic diagnostic and benchmark comparison.
 Existing-server incident capture is separately limited to the four reviewed
@@ -616,34 +700,56 @@ Configuration review extracts the bounded CPU, RAM, filesystem, mount, and disk
 facts listed above. Generation or application of TuneD/systemd artifacts remains
 a roadmap item; it is not silently approximated by the current implementation.
 Reviewed `pg_converter` runs are a separate durable workflow and are not
-silently injected into every experiment manifest.
+silently injected into every experiment manifest. Optional `spec.maker` adds a
+build/runtime-image phase. Logical migration uses a separate migration YAML and
+`pg_play/logical-experiment-v1` scenario, with its own worker and recovery model.
+It currently supports same-major PostgreSQL 15–18 migrations in a restricted
+laboratory profile, not cross-major upgrade qualification.
+
+Independent experiments can select different `spec.stand.project` directories.
+Concurrent stands require pg-stand 0.3.0+ and distinct names, ports, storage and
+workload roots. The pg-stand dependency includes support for those features.
+See [multiple-stand scenarios](docs/user-scenarios.md#7-use-independent-stands).
 
 ## Labs
 
-`labs/` holds reproducible end-to-end scenarios that drive real stands through pg_play. They are
-tracked in Git and excluded from both the wheel and source distribution; use a repository checkout
-to run them. `labs/site-demo-report/` rebuilds the public pg_diag sample report (a
-5-minute snapshot window over ten pg_workload profiles with staged incidents on the
-`pg-trace` stand, then anonymized and audited) with one command; see its README for the
-parameters and the expected result.
+`labs/` contains repository-only scenarios that drive real stands through pg-play.
+They are tracked in Git and excluded from both the wheel and source distribution.
+[The site demo lab](https://github.com/O2eg/pg_play/blob/main/labs/site-demo-report/README.md) collects a five-minute report
+with ten workload profiles and staged incidents, then anonymizes and audits it.
+Its README describes stand/data preparation, current reproduction limits and
+historical reference measurements.
 
 ## Development
 
+Use Python 3.11+ and current component checkouts whose versions satisfy the
+minimums above. Install the orchestrator and all eight components in one resolver
+transaction, so unpublished local releases satisfy each other's requirements:
+
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e ../pg_stand -e ../pg_workload -e ../pg_diag \
-  -e ../pg_configurator -e ../pg_converter -e ../pg_perf_bench
-.venv/bin/pip install -e '.[dev,maker]'
+python3.11 -m venv .venv
+.venv/bin/python -m pip install \
+  -e ../pg_configurator -e ../pg_converter -e ../pg_diag \
+  -e ../pg_logical_repl -e ../pg_maker -e ../pg_perf_bench \
+  -e ../pg_stand -e ../pg_workload -e '.[dev]'
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 .venv/bin/pytest
+.venv/bin/python -m pip check
 ```
 
-For coordinated releases, publish the component distributions before tagging
-`pg_play`: first `pg_configurator`, `pg_converter`, `pg_diag`, `pg_stand`, and
-`pg_workload`, then `pg_perf_bench` (which depends on `pg_diag`), and finally
-`pg_play`. Publish a required `pg_maker` update before `pg_play` when changing the
-optional maker integration.
-Ordinary branch CI checks out the component sources so a coordinated source
-change can be tested before those versions reach PyPI. Tagged publish jobs use
-the package index deliberately and therefore enforce this release order.
+Branch CI checks out all eight component repositories and runs the tests on
+Python 3.11 and 3.12. It builds a wheel set, installs only pg-play into a clean
+environment and verifies automatic dependency installation, component identities,
+versions and capability contracts. It also installs each component in a separate
+clean environment and verifies that pg-play is absent. The same installation
+checks run before publication using the component releases available from PyPI.
+Docker/database integration tests have separate prerequisites; these installation
+and unit checks do not qualify full database migrations or PostgreSQL builds.
+
+For coordinated releases, publish all required component distributions before
+tagging pg-play. Publish pg-diag before any pg-perf-bench release that requires
+it, and publish pg-maker, pg-stand and pg-logical-repl updates before a pg-play
+release that requires their versions. Ordinary branch CI can exercise coordinated
+source changes before publication; tagged publishing jobs deliberately resolve
+components from PyPI and enforce this release order.

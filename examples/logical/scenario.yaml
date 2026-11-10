@@ -1,0 +1,11 @@
+schema_version: pg_play/logical-experiment-v1
+ddl_files: []
+converter_plans: []
+# Reference an already installed workload targeting the migration source.
+# workload_manifest: ../baseline.yaml
+diagnostics: true
+oracle: true
+# Stop all external writers before the verification phase.
+quiescent_at_verification: true
+readiness_timeout_seconds: 600
+finish: replicating

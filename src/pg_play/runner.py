@@ -17,6 +17,7 @@ from pg_play.contract import ContractError, validate_envelope
 from pg_play.state import read_state, utc_now, write_json
 
 EXECUTABLES = {
+    "pg_logical_repl": "pg-logical-repl",
     "pg_maker": "pg-maker",
     "pg_configurator": "pg-configurator",
     "pg_converter": "pg-converter",
@@ -73,6 +74,11 @@ class ComponentRunner:
             )
         command = [
             executable,
+            *(
+                ["--contract", "pg_play/component/v2"]
+                if invocation.component == "pg_logical_repl"
+                else []
+            ),
             "--machine",
             "--request-id",
             invocation.request_id,
@@ -150,6 +156,7 @@ class ComponentRunner:
                         "schema_version": "pg_play/active-process-v1",
                         "pid": process.pid,
                         "process_start_ticks": process_start_ticks(process.pid),
+                        "boot_id": process_boot_id(),
                         "owner_uid": os.getuid() if hasattr(os, "getuid") else None,
                         "executable": process_executable(process.pid),
                         "launcher": str(Path(command[0]).resolve()),
@@ -261,6 +268,8 @@ def process_executable(pid: int) -> str | None:
 
 
 def recorded_process_is_alive(record: dict[str, Any]) -> bool:
+    if record.get("boot_id") is not None and record["boot_id"] != process_boot_id():
+        return False
     try:
         pid = int(record["pid"])
         expected_start = int(record["process_start_ticks"])
@@ -271,6 +280,14 @@ def recorded_process_is_alive(record: dict[str, Any]) -> bool:
         return False
     state, actual_start = process
     return state not in {"Z", "X", "x"} and actual_start == expected_start
+
+
+def process_boot_id() -> str | None:
+    """Disambiguate PID/start-time reuse after a host reboot."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
 
 
 def terminate_recorded_process(path: Path, *, grace_seconds: float = 10.0) -> bool:

@@ -5,12 +5,15 @@ description: Validate, inspect, compare, and join pg_diag and pg_perf_bench arti
 
 # Analyze PostgreSQL Experiment
 
-Use `inspect_diagnostic_report` and `compare_diagnostic_reports` before interpreting report results. These tools validate the artifact contract and prevent analysis of malformed or incompatible JSON.
+Use `inspect_diagnostic_report` and `compare_diagnostic_reports` before interpreting report results. These tools validate the artifact contract and report compatibility findings. Comparison still returns deltas for incompatible reports; check `comparability` before interpreting them.
 
 For benchmark artifacts, use `inspect_benchmark_report` and
 `compare_benchmark_reports`. Confirm equal iteration parameters and values,
 benchmark methodology, workload definition, client placement, PostgreSQL
-configuration, and stand resources before interpreting TPS deltas.
+configuration, and stand resources before interpreting TPS deltas. For an intended
+change in one dimension, select a matching JOIN task instead of claiming all
+controls are equal. Diagnostic comparisons return summary-count deltas, not
+automatic per-query performance analysis; inspect the underlying items.
 
 ## Single report
 

@@ -18,6 +18,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command")
+    from pg_play.logical_cli import add_commands as logical_commands
+
+    logical_commands(commands)
 
     maker = commands.add_parser("maker", help="Manage durable pg_maker operations")
     maker_commands = maker.add_subparsers(dest="maker_command", required=True)
@@ -104,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities.add_argument(
         "--component",
         choices=(
+            "pg_logical_repl",
             "pg_maker",
             "pg_configurator",
             "pg_converter",
@@ -242,7 +246,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     service = PgPlayService()
     try:
-        if args.command == "maker":
+        if args.command == "logical":
+            from pg_play.logical_cli import dispatch
+
+            result = dispatch(service.logical, args)
+        elif args.command == "maker":
             options = vars(args).copy()
             options.pop("command")
             name = options.pop("maker_command")

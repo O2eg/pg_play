@@ -2,7 +2,10 @@
 
 Use `api_version: pg_play/v1` and `kind: PostgreSQLExperiment`.
 
-Required structure:
+The example uses the bundled PG18 single-node profile (1 CPU, 1 GiB). Initialize
+`stand` with pg-stand and `workload` with pg-workload before validating it, and
+save the manifest in their parent directory. Match configurator CPU/RAM/version
+to the selected stand if you change the profile. Optional sections are marked:
 
 ```yaml
 api_version: pg_play/v1
@@ -12,7 +15,7 @@ metadata:
 spec:
   artifact_root: .pg_play/experiments/pg18-mixed-baseline
   stand:
-    config: ../pg_stand/configs/single.yaml
+    config: ./stand/configs/single.yaml
     project: ./stand
     # Optional values applied after pg_configurator, included in the plan hash:
     # parameter_overrides:
@@ -20,8 +23,8 @@ spec:
     #   auto_explain.log_format: json
   configurator:
     inputs:
-      db_cpu: "4"
-      db_ram: 8Gi
+      db_cpu: "1"
+      db_ram: 1Gi
       pg_version: "18"
       db_duty: mixed
   workload:
@@ -54,6 +57,7 @@ spec:
     report_name: pg18-mixed-benchmark
     benchmark_type: default
     clients: [1, 4, 16]              # or times_seconds
+    system_metrics_interval: 5
     init_command: >-
       ARG_PGBENCH_PATH -i -s 10 -h ARG_PG_HOST -p ARG_PG_PORT
       -U ARG_PG_USER ARG_PG_DATABASE
@@ -87,7 +91,8 @@ For a packaged maximum-TPS benchmark, use `workload_profile: imdb` or
 `workload_duration_seconds`, and `clients`. Omit
 `init_command`, `workload_command`, and `workload_path`; pg_perf_bench supplies
 and embeds the profile sources and exact commands. The newest local pgbench and
-matching psql are selected automatically. `system_metrics_interval` defaults to
-one second; set `system_metrics_duration` only for a custom command which has no
-pgbench `-T` or `--time` option. The pg_diag OS sampler runs on the Docker host
-during every measured workload window.
+matching psql are selected automatically. Set `system_metrics_interval: 5`
+explicitly: pg-play defaults to 1 second, which the minimum supported
+pg-perf-bench release rejects. Set `system_metrics_duration` only for a custom
+command which has no pgbench `-T` or `--time` option. The pg_diag OS sampler runs
+on the benchmark runner host during every measured workload window.
