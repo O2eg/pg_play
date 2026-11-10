@@ -23,7 +23,11 @@ mcp = FastMCP(
         "packet hashes, then call start_converter_run with the unchanged plan hash."
         " For PostgreSQL builds, call maker_validate, maker_prepare, maker_resolve and maker_plan, "
         "then maker_start with the reviewed hash. Observe with maker_status/maker_events and "
-        "cancel through maker_cancel. DB tests default off; succeeded builds remain unverified."
+        "cancel through maker_cancel. Test policy defaults to the maker lock. "
+        "Use maker_runtime_check before building for a stand. Maker owns profile composition. "
+        "Standalone extension and publication workers use the same lifecycle tools. "
+        "With publish_config the returned operation is publication; "
+        "source_operation_directory identifies the separate build."
     ),
     json_response=True,
 )
@@ -43,6 +47,109 @@ def component_capabilities(component: str | None = None) -> dict[str, Any]:
 def maker_validate(manifest: str) -> dict:
     """Validate maker configuration without preparing images or building PostgreSQL."""
     return _service().maker_validate(manifest)
+
+
+@mcp.tool()
+def maker_init(directory: str, profile: str | None = None) -> dict:
+    """Initialize editable inputs from a profile supplied by the installed pg-maker."""
+    return _service().maker_init(directory, profile)
+
+
+@mcp.tool()
+def maker_config_show(manifest: str) -> dict:
+    """Read maker's effective configuration and provenance without changing its profiles."""
+    return _service().maker_config_show(manifest)
+
+
+@mcp.tool()
+def maker_package_names(manifest: str) -> dict:
+    """Read native package names and paths from maker instead of guessing their naming."""
+    return _service().maker_package_names(manifest)
+
+
+@mcp.tool()
+def maker_extension_init(
+    directory: str,
+    extensions: list[str],
+    major: int = 18,
+    profile: str | None = None,
+    packages: str | None = None,
+    platform: str = "debian-13",
+    architecture: str = "amd64",
+    split_bundled: bool = False,
+) -> dict:
+    """Initialize editable extension recipes for a community or profile SDK.
+
+    Profile builds require the actual database packages. split_bundled explicitly
+    requests a migration of modules already owned by those packages.
+    """
+    return _service().maker_extension_init(
+        directory,
+        extensions,
+        major=major,
+        profile=profile,
+        packages=packages,
+        platform=platform,
+        architecture=architecture,
+        split_bundled=split_bundled,
+    )
+
+
+@mcp.tool()
+def maker_extension_prepare(
+    manifest: str,
+    output: str,
+    operations: str,
+    input_store: str,
+    operation_id: str,
+    offline: bool = False,
+) -> dict:
+    """Start detached SDK/source preparation; observe using maker_status and maker_events."""
+    return _service().maker_extension_prepare(
+        manifest, output, operations, input_store, operation_id, offline
+    )
+
+
+@mcp.tool()
+def maker_extension_plan(lock: str) -> dict:
+    """Preview a frozen extension lock, including its source and installed-package tests."""
+    return _service().maker_extension_plan(lock)
+
+
+@mcp.tool()
+def maker_extension_build(
+    lock: str,
+    operations: str,
+    operation_id: str,
+    input_store: str | None = None,
+    publish_config: str | None = None,
+) -> dict:
+    """Build the frozen extension inputs; optional publication returns its own operation ID."""
+    return _service().maker_extension_build(
+        lock, operations, operation_id, input_store, publish_config
+    )
+
+
+@mcp.tool()
+def maker_publish_plan(source: str, config: str) -> dict:
+    """Preview tested artifacts and configured receivers without network access or credentials."""
+    return _service().maker_publish_plan(source, config)
+
+
+@mcp.tool()
+def maker_publish_run(
+    source: str,
+    config: str,
+    operations: str,
+    operation_id: str,
+    wait_for_source: bool = False,
+) -> dict:
+    """Publish through maker using the current receiver config and verified package evidence.
+
+    Returns a detached publication operation. Cancelling it leaves the source build running.
+    Credentials are references in config, never tool arguments.
+    """
+    return _service().maker_publish_run(source, config, operations, operation_id, wait_for_source)
 
 
 @mcp.tool()
@@ -213,18 +320,28 @@ def maker_resolve(
 
 @mcp.tool()
 def maker_plan(
-    lock: str, input_store: str | None = None, goal: str = "package", run_db_tests: bool = False
+    lock: str,
+    input_store: str | None = None,
+    goal: str = "package",
+    run_db_tests: bool | None = None,
 ) -> dict:
-    """Plan a locked build. DB tests default off; resulting packages remain unverified."""
+    """Plan a locked build. Omit run_db_tests to preserve maker's locked test policy."""
     return _service().maker_plan(lock, input_store, goal, run_db_tests)
 
 
 @mcp.tool()
 def maker_start(
-    plan: dict, plan_hash: str, operations: str, operation_id: str, cache_store: str | None = None
+    plan: dict,
+    plan_hash: str,
+    operations: str,
+    operation_id: str,
+    cache_store: str | None = None,
+    publish_config: str | None = None,
 ) -> dict:
     """Start an unchanged reviewed plan in maker's detached worker."""
-    return _service().maker_start(plan, plan_hash, operations, operation_id, cache_store)
+    return _service().maker_start(
+        plan, plan_hash, operations, operation_id, cache_store, publish_config
+    )
 
 
 @mcp.tool()
@@ -249,7 +366,7 @@ def maker_cancel(directory: str) -> dict:
 def maker_resume(
     directory: str, plan_hash: str | None = None, input_hash: str | None = None
 ) -> dict:
-    """Resume with the original build plan hash or preparation input hash."""
+    """Resume build/runtime with plan_hash; preparation/extensions/publication with input_hash."""
     return _service().maker_resume(directory, plan_hash, input_hash)
 
 
@@ -260,9 +377,15 @@ def maker_artifacts(directory: str) -> dict:
 
 
 @mcp.tool()
-def maker_export(directory: str, output: str) -> dict:
+def maker_export(directory: str, output: str, include_inputs: bool = False) -> dict:
     """Export a terminal maker operation to a new directory before scratch cleanup."""
-    return _service().maker_export(directory, output)
+    return _service().maker_export(directory, output, include_inputs)
+
+
+@mcp.tool()
+def maker_runtime_check(plan: dict, variant: str, base_image: str) -> dict:
+    """Ask maker to check planned packages against the stand requirements before compilation."""
+    return _service().maker_runtime_check(plan, variant, base_image)
 
 
 @mcp.tool()

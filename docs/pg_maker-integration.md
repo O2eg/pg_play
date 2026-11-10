@@ -13,6 +13,12 @@ For local pg_maker development, install its checkout into the same environment:
 pg_play/.venv/bin/python -m pip install -e ./pg_maker
 ```
 
+The extra requires `pg-maker>=0.5.0,<1`. Commands are capability-checked before
+execution, since a version number alone does not identify every supported workflow.
+Runtime preflight needs maker's `runtime check` command; use a maker release or
+source checkout exposing it. CI tests against the current maker source checkout,
+including the wheel installation smoke test. Publish a required maker change first.
+
 ## Adapter contract
 
 `PgPlayService.maker_*` and the corresponding MCP tools invoke the separate
@@ -20,6 +26,14 @@ pg_play/.venv/bin/python -m pip install -e ./pg_maker
 patch series and caches. Preparation, resolution, build and runtime creation return
 after starting a durable worker. Use `maker_status` and `maker_events` to observe
 it, and `maker_cancel` to cancel it, including after a client disconnect.
+
+Both CLIs run on the same machine and share paths and Docker images. This adapter
+does not transport operations to a remote builder. Build profiles, PostgreSQL and
+ICU versions, extension recipes, SDK compatibility, package names and installation
+paths belong to pg_maker. pg_play supplies only the selected profile/configuration
+and the consumer's runtime requirements; it does not invent vendor-specific variants.
+Use `maker_init(directory, profile?)`, `maker_config_show(manifest)` and
+`maker_package_names(manifest)` to obtain maker's effective inputs and native names.
 
 Preparation and resolution accept `config_dir`, `features`, `build_mode`,
 `with_doc` and `doc_languages` in Python and MCP. CLI options are
@@ -47,26 +61,36 @@ Debug commands run inside a private container copy of an iteration's workspace.
 Pruning preserves the current and pinned iterations and requires an unchanged
 cleanup plan. It does not run a global Docker prune.
 
-`maker_plan(lock, input_store?, goal="package", run_db_tests=False)` returns
+`maker_plan(lock, input_store?, goal="package", run_db_tests=None)` returns
 `pg_play/maker-plan-v1`: copies of the BuildLock and BuildPlan, parameters and an
 overall `plan_hash`. `maker_start(plan, plan_hash, operations, operation_id,
-cache_store?)` checks that hash, stores the reviewed inputs under
+cache_store?, publish_config?)` checks that hash, stores the reviewed inputs under
 `.pg-play-plans/OPERATION/`, passes the original maker plan hash and returns
 `operation_directory`. Reusing an operation ID with a different plan is rejected.
-Resume uses the maker build plan hash, or the input hash for preparation/resolution.
+With no test override, maker's locked policy applies (tests enabled by default).
+The wrapper records the effective boolean returned in the BuildPlan. CLI overrides
+are mutually exclusive `--run-db-tests` and `--skip-db-tests`. `--goal verified`
+and `--goal test-full` require DB tests; an explicit skip is rejected by maker.
+`test-full` runs the long suites and does not produce packages for a stand.
+Resume uses the maker build/runtime plan hash, or the operation input hash for
+preparation, resolution, standalone extensions and publication.
 The wrapper plan hash and the maker plan hash are distinct.
 
 `maker_artifacts` lists verified artifact references, manifests, verification records
-and reports. `maker_export` copies a finished operation to a new directory.
+and reports. `maker_export` copies a finished operation to a new directory;
+`include_inputs=True` / `--include-inputs` also exports frozen inputs.
 Ordinary run cleanup is available through pg_maker's CLI/Python API; development
 sessions have the separate `maker_dev_prune` operation.
 
 The CLI exposes `pg-play maker validate|prepare|resolve|plan|start|status|events|
-cancel|resume|artifacts|export|runtime-plan|runtime-start`. After preparation and
+cancel|resume|artifacts|export|runtime-check|runtime-plan|runtime-start`. After preparation and
 resolution:
 
 ```bash
 pg-play maker plan build.lock.json --goal package > reviewed-maker.json
+# Before an experiment, ask maker to verify the selected variant's prerequisites:
+pg-play maker runtime-check reviewed-maker.json \
+  --variant my-feature.debian13-x64.candidate --base-image sha256:PREPARED_IMAGE_ID
 pg-play maker start reviewed-maker.json --plan-hash SHA256_FROM_REVIEWED_PLAN \
   --operations ./maker-operations --operation-id candidate
 pg-play maker status ./maker-operations/candidate
@@ -87,20 +111,32 @@ to `environments.test.packages`; use the resulting image ID from `maker_prepare`
 Runtime construction is offline and does not run initdb or start PostgreSQL. It
 checks libraries with ldd. The package payload must contain pg_stat_statements,
 pg_buffercache, pg_wait_sampling, pg_stat_kcache and auto_explain under the same
-prefix. Create a separate stand feature with these diagnostic components. PGXS
-uses maker's internal headers and pg_config; headers and PGXS are excluded from
-the delivered packages. Extensions for a different PostgreSQL prefix do not
-satisfy this contract.
+prefix. Select a maker feature providing these modules. PGXS uses maker's headers
+and pg_config; shipping headers and PGXS is controlled by maker's
+`packaging.server_dev_files`. Extensions for another prefix do not satisfy this contract.
 
-Pinned starting recipes are in [examples/maker](../examples/maker). Copy the five
-component recipes into the maker project's `components/` directory and
-`my-feature-stand.yaml` into `config/features/`, then select the feature in
-`build.yaml`. Previous local validation compiled the recipes against PostgreSQL
-18.1 and checked InstallTree/DEB packaging and offline runtime construction with
-`goal=package`, without documentation or database tests. Control and SQL files
-were included. pg_stat_statements uses its native check target because upstream
-does not support installcheck. CREATE EXTENSION and native database suites remain
-separate acceptance checks.
+The generic [stand feature example](../examples/maker/my-feature-stand.yaml) refers
+to recipes supplied by `pg-maker init`. Copy only that feature into
+`config/features/`, select it in `build.yaml`, and retain
+`packaging.standard_contrib: true` for pg_buffercache and auto_explain. Component
+versions and compatibility remain in maker's recipes. For an existing custom
+distribution, adjust its feature in the maker project instead of replacing its
+component list with the generic example.
+
+`maker_runtime_check(plan, variant, base_image)` asks maker to check the selected
+candidate, platform, prefix, dependency-export policy and declared modules before
+compilation. Experiment planning calls it automatically. This checks declared
+inputs; the subsequent runtime plan still verifies the actual packages and evidence.
+If a module is missing, change the maker feature and prepare/resolve again.
+
+Runtime handoff needs the pinned dependency repository. Default source and package
+tests provide it. To skip source tests while retaining a usable runtime export,
+set `spec.validation.run_package_tests: true` in the maker project's
+`config/defaults.yaml` **before preparation/resolve**, then explicitly skip DB
+tests. Completely untested binary-only builds without documentation fail preflight.
+Standalone extension packages can be built through the tools below, but this
+runtime adapter currently reads modules from the three database DEBs; it does not
+merge separately packaged extensions into their payloads.
 
 The profile reuses the installed pg_stand entrypoint and PgBouncer helper, hashing
 their contents. Updates require a new plan. The custom bootstrap uses maker's
@@ -151,6 +187,64 @@ baseline branch is included only when database tests are enabled.
 
 Full database/workload execution is a separate acceptance step. Unit/contract
 tests and runtime image construction do not establish all topology/SQL behavior.
+
+## Standalone extension packages
+
+The CLI, Python service and MCP expose `extension-init`, `extension-prepare`,
+`extension-plan` and `extension-build` (MCP names use `maker_extension_*`).
+The native maker project controls SDK dependencies, source tests and clean-container
+package tests. For example:
+
+```bash
+pg-play maker extension-init ./extensions --major 18 --platform debian-13 \
+  --extension pg_wait_sampling --extension pg_stat_kcache --extension pg_repack
+pg-play maker extension-prepare ./extensions/extensions.yaml \
+  --output ./extensions/lock.json --input-store ./extensions/inputs \
+  --operations ./operations --operation-id extension-prepare
+# Wait for preparation to succeed using status/events before reading its lock.
+pg-play maker extension-plan ./extensions/lock.json
+pg-play maker extension-build ./extensions/lock.json \
+  --operations ./operations --operation-id extension-build
+```
+
+Use `--platform rocky-10` for RPMs. A profile target uses
+`--profile PROFILE --packages DIRECTORY_OF_DATABASE_PACKAGES`; maker validates the
+actual SDK and dependencies. `--split-bundled` is an explicit native migration
+request, never automatically enabled by pg_play. Edit maker's generated recipes
+for other extensions. A successful extension build does not qualify the database core.
+
+## Publication and CI/CD
+
+`maker_publish_plan(source, config)` previews verified artifacts and receivers
+without network requests. `maker_publish_run(source, config, operations,
+operation_id, wait_for_source=False)` starts maker's durable publisher using the
+current source/configuration. Preview is read-only; this native interface does not
+accept a reviewed publication hash. Maker seals and validates the inputs when run
+is invoked. Keep the configuration immutable between preview and execution.
+
+```bash
+pg-play maker publish-plan ./operations/extension-build --config publication.yaml
+pg-play maker publish-run ./operations/extension-build --config publication.yaml \
+  --operations ./operations --operation-id publication
+```
+
+Receiver configuration and credential references use maker's publication format.
+Maker owns Nexus APT/YUM/Raw uploads, directory delivery, package-test evidence gates,
+hash verification, retry/reuse and TLS policy. pg_play does not store receiver
+credentials or change TLS settings. A plain directory of DEBs/RPMs is insufficient:
+the source must be a successful operation or a verified portable export.
+
+`maker start` and `maker extension-build` accept `--publish-config publication.yaml`.
+The returned `operation_directory` then belongs to **publication**;
+`source_operation_directory` identifies the independent build. Observe the returned
+operation until it succeeds: a successful launcher exit only confirms scheduling.
+Cancellation of publication leaves the build running. Resume extensions/publication
+with their `result.input_hash` from `maker status`, not a database plan hash.
+An already-running build can be followed using `publish-run --wait-for-source`.
+
+The experiment's automatic maker phase only builds its packages and runtime image.
+Publish its completed build through the separate publication tools when requested.
+No upload is implied by starting a performance experiment.
 
 ## Source-editing workflow
 

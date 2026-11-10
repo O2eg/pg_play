@@ -10,6 +10,16 @@ def test_mcp_exposes_only_high_level_typed_operations() -> None:
 
     assert {tool.name for tool in tools} == {
         "maker_validate",
+        "maker_init",
+        "maker_config_show",
+        "maker_package_names",
+        "maker_extension_init",
+        "maker_extension_prepare",
+        "maker_extension_plan",
+        "maker_extension_build",
+        "maker_publish_plan",
+        "maker_publish_run",
+        "maker_runtime_check",
         "maker_dev_open",
         "maker_dev_status",
         "maker_dev_patch",

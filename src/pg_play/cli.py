@@ -24,6 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     from pg_play.maker_development import add_commands
 
     add_commands(maker_commands)
+    from pg_play.maker_packages import add_commands as package_commands
+
+    package_commands(maker_commands)
     maker_commands.add_parser("validate").add_argument("manifest")
     for name in ("prepare", "resolve"):
         command = maker_commands.add_parser(name)
@@ -46,13 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("lock")
     command.add_argument("--input-store")
     command.add_argument("--goal", default="package")
-    command.add_argument("--run-db-tests", action="store_true")
+    tests = command.add_mutually_exclusive_group()
+    tests.add_argument("--run-db-tests", action="store_true", default=None)
+    tests.add_argument("--skip-db-tests", dest="run_db_tests", action="store_false")
     command = maker_commands.add_parser("start")
     command.add_argument("plan")
     command.add_argument("--plan-hash", required=True)
     command.add_argument("--operations", required=True)
     command.add_argument("--operation-id", required=True)
     command.add_argument("--cache-store")
+    command.add_argument("--publish-config")
     for name in ("status", "events", "cancel", "resume", "artifacts", "export"):
         command = maker_commands.add_parser(name)
         command.add_argument("directory")
@@ -64,10 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--input-hash")
         if name == "export":
             command.add_argument("--output", required=True)
+            command.add_argument("--include-inputs", action="store_true")
     command = maker_commands.add_parser("runtime-plan")
     command.add_argument("artifacts")
     command.add_argument("--base-image", required=True)
     command.add_argument("--output", required=True)
+    command = maker_commands.add_parser("runtime-check")
+    command.add_argument("plan")
+    command.add_argument("--variant", required=True)
+    command.add_argument("--base-image", required=True)
     command = maker_commands.add_parser("changes-workspace")
     command.add_argument("directory")
     command.add_argument("--input-store", required=True)
@@ -235,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
             options = vars(args).copy()
             options.pop("command")
             name = options.pop("maker_command")
-            if name == "start":
+            if name in {"start", "runtime-check"}:
                 options["plan"] = json.loads(Path(options["plan"]).read_text(encoding="utf-8"))
             result = getattr(service, "maker_" + name.replace("-", "_"))(**options)
         elif args.command == "capabilities":

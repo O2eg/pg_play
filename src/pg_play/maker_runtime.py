@@ -1,11 +1,40 @@
 """The pg_stand-specific runtime profile lives with the orchestrator."""
 
+import copy
 from hashlib import sha256
 from importlib.resources import files
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from pg_play.maker import MakerClient
+from pg_play.maker import MakerClient, checked_plan
 from pg_play.state import write_json
+
+
+def check_runtime(client: MakerClient, plan: dict, variant: str, base_image: str) -> dict:
+    """Maker validates its profiles; play only supplies the consumer requirements."""
+    checked_plan(plan, plan["plan_hash"])
+    client.require("runtime check", "runtime plan", "runtime build", "artifacts")
+    with TemporaryDirectory(prefix="pg-play-runtime-check-") as scratch:
+        root = Path(scratch)
+        lock = copy.deepcopy(plan["lock"])
+        if plan.get("input_store"):
+            lock.setdefault("transport", {})["input_store"] = plan["input_store"]
+        write_json(root / "lock.json", lock)
+        write_json(root / "plan.json", plan["build_plan"])
+        write_json(root / "profile.json", runtime_profile(base_image))
+        return client.call(
+            (
+                "runtime",
+                "check",
+                str(root / "lock.json"),
+                "--plan",
+                str(root / "plan.json"),
+                "--profile",
+                str(root / "profile.json"),
+                "--variant",
+                variant,
+            )
+        )
 
 
 def runtime_profile(

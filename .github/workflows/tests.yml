@@ -23,6 +23,11 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Check out pg_maker sources
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: O2eg/pg_maker
+          path: .ci-components/pg_maker
       - name: Check out component sources
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -60,6 +65,7 @@ jobs:
             --editable .ci-components/pg_perf_bench \
             --editable .ci-components/pg_stand \
             --editable .ci-components/pg_workload \
+            --editable .ci-components/pg_maker \
             --editable '.[dev,maker]'
       - run: ruff check --exclude .ci-components .
       - run: ruff format --check --exclude .ci-components .
@@ -71,6 +77,11 @@ jobs:
     needs: unit
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Check out pg_maker sources
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: O2eg/pg_maker
+          path: .ci-components/pg_maker
       - name: Check out component sources
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -121,7 +132,10 @@ jobs:
             "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/${command}" --version
           done
           for wheel in dist/*.whl; do
-            "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip install "${wheel}[maker]"
+            "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/python" -m pip install \
+              --editable .ci-components/pg_maker "${wheel}[maker]"
           done
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" capabilities --component pg_maker
           "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" maker dev-open --help
+          "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" maker extension-init --help
+          "${RUNNER_TEMP}/pg-play-wheel-smoke/bin/pg-play" maker publish-run --help

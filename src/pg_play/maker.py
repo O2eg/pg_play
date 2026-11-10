@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pg_play.contract import canonical_hash
+from pg_play.contract import canonical_hash, validate_capabilities
 from pg_play.runner import ComponentInvocation, ComponentRunner
 from pg_play.state import exclusive_lock, read_state, write_json
 
@@ -28,8 +28,32 @@ def checked_plan(plan: dict, expected: str) -> None:
 class MakerClient:
     def __init__(self, runner: ComponentRunner) -> None:
         self.runner = runner
+        self._capabilities: dict | None = None
+
+    def require(self, *commands: str) -> dict:
+        if self._capabilities is None:
+            self._capabilities = validate_capabilities(
+                self._invoke(
+                    ("--component-capabilities",), request_id="pg-play-maker-capabilities"
+                ),
+                expected_component="pg_maker",
+            )
+        missing = set(commands).difference(self._capabilities["commands"])
+        if missing:
+            raise MakerError("installed pg-maker lacks commands: " + ", ".join(sorted(missing)))
+        return self._capabilities
 
     def call(self, arguments: tuple[str, ...], *, request_id: str = "pg-play-maker") -> dict:
+        command = (
+            " ".join(arguments[:2])
+            if arguments[0]
+            in {"env", "runtime", "changes", "dev", "extension", "publish", "config", "package"}
+            else arguments[0]
+        )
+        self.require(command)
+        return self._invoke(arguments, request_id=request_id)
+
+    def _invoke(self, arguments: tuple[str, ...], *, request_id: str) -> dict:
         # Maker mutations always return after handing ownership to its worker. Never
         # attach pg_play's cancel_path: killing this CLI does not cancel that worker.
         response = self.runner.run(
@@ -105,7 +129,7 @@ class MakerClient:
         *,
         input_store: str | Path | None = None,
         goal: str = "package",
-        run_db_tests: bool = False,
+        run_db_tests: bool | None = None,
     ) -> dict:
         lock_path = Path(lock).absolute()
         args = (
@@ -113,8 +137,9 @@ class MakerClient:
             str(lock_path),
             "--goal",
             goal,
-            "--run-db-tests" if run_db_tests else "--skip-db-tests",
         )
+        if run_db_tests is not None:
+            args += ("--run-db-tests" if run_db_tests else "--skip-db-tests",)
         if input_store is not None:
             args += ("--input-store", str(Path(input_store).absolute()))
         build_plan = self.call(args)
@@ -131,7 +156,7 @@ class MakerClient:
             if input_store
             else document.get("transport", {}).get("input_store"),
             "goal": goal,
-            "run_db_tests": run_db_tests,
+            "run_db_tests": build_plan["spec"]["run_db_tests"],
         }
         result["plan_hash"] = canonical_hash(result)
         return result
@@ -144,8 +169,10 @@ class MakerClient:
         operation_id: str,
         *,
         cache_store: str | Path | None = None,
+        publish_config: str | Path | None = None,
     ) -> dict:
         checked_plan(plan, plan_hash)
+        self.require("build", *("publish run",) if publish_config is not None else ())
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", operation_id):
             raise MakerError("invalid maker operation_id")
         root = Path(operations).absolute()
@@ -182,11 +209,14 @@ class MakerClient:
             args += ("--input-store", plan["input_store"])
         if cache_store is not None:
             args += ("--cache-store", str(Path(cache_store).absolute()))
+        if publish_config is not None:
+            args += ("--publish-config", str(Path(publish_config).absolute()))
         result = self.call(args, request_id=f"pg-play-build-{operation_id}")
         return {
             **self._reference(result, root),
             "reviewed_plan_hash": plan_hash,
             "build_plan_hash": build_plan["plan_hash"],
+            "source_operation_directory": str(root / operation_id),
         }
 
     def status(self, directory: str | Path) -> dict:
@@ -220,10 +250,11 @@ class MakerClient:
     def artifacts(self, directory: str | Path) -> dict:
         return self.call(("artifacts", str(Path(directory).absolute())))
 
-    def export(self, directory: str | Path, output: str | Path) -> dict:
-        return self.call(
-            ("export", str(Path(directory).absolute()), "--out", str(Path(output).absolute()))
-        )
+    def export(self, directory: str | Path, output: str | Path, *, include_inputs=False) -> dict:
+        args = ("export", str(Path(directory).absolute()), "--out", str(Path(output).absolute()))
+        if include_inputs:
+            args += ("--include-inputs",)
+        return self.call(args)
 
     @staticmethod
     def _reference(state: dict[str, Any], operations: str | Path) -> dict:

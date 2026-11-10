@@ -119,7 +119,9 @@ python -m pip install --upgrade --upgrade-strategy eager 'pg-play[maker]'
 pg-play capabilities --component pg_maker
 ```
 
-This adds `pg-maker>=0.1.0,<1`. See the [maker integration guide](docs/pg_maker-integration.md)
+This adds `pg-maker>=0.5.0,<1`. Each workflow also checks the installed maker's
+capabilities; runtime preflight requires `runtime check`. See the
+[maker integration guide](docs/pg_maker-integration.md)
 for CLI, Python and MCP operations and [the changelog](CHANGELOG.md) for release notes.
 
 The components remain available through their own commands:

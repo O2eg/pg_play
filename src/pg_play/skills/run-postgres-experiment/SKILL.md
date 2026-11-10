@@ -21,6 +21,18 @@ Use only the high-level `pg_play` MCP tools. Do not construct raw component shel
 
 ## Guardrails
 
+- For an optional maker phase, use `maker_init`, `maker_config_show`, preparation,
+  resolution and `maker_plan`. Preserve the locked test policy unless the user
+  explicitly requests an override. `maker_runtime_check` verifies consumer requirements
+  before compilation; `plan_experiment` also runs it. Profiles, library versions,
+  extension recipes and SDK compatibility belong to maker. Resolve missing modules
+  there instead of inventing vendor-specific behavior in pg_play.
+- Observe maker's detached workers with `maker_status` and `maker_events`. Distinguish
+  the reviewed wrapper hash from the native plan/input hash used for recovery.
+  Publication is explicit and returns its own operation directory; its cancellation
+  does not cancel the source build. Check test qualification and artifact evidence,
+  not just a successful launcher response.
+
 - Treat the manifest and plan as immutable inputs. Treat run state and events as durable pg_play-owned records; never edit them to force recovery.
 - Do not put passwords, tokens, password-bearing DSNs, or private-key contents in a manifest or response.
 - Do not bypass ownership, plan-hash, content-integrity, or profile validation failures.

@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-maker = ["pg-maker>=0.1.0,<1"]
+maker = ["pg-maker>=0.5.0,<1"]
 dev = [
   "build>=1.2,<2",
   "pytest>=8.3,<9",

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from pg_play.contract import canonical_hash
+from pg_play.contract import EXIT_CODES, MACHINE_INTERFACE, canonical_hash
 from pg_play.maker import MakerClient, MakerError
 from pg_play.maker_experiment import cancel_owned, execute_phase, phase_plan, stand_config
 from pg_play.manifest import MakerSpec
@@ -36,12 +36,66 @@ def reviewed_plan():
     return value
 
 
+def maker_capabilities():
+    commands = {
+        "init",
+        "validate",
+        "config show",
+        "package names",
+        "env prepare",
+        "resolve",
+        "plan",
+        "build",
+        "status",
+        "events",
+        "cancel",
+        "resume",
+        "artifacts",
+        "export",
+        "runtime check",
+        "runtime plan",
+        "runtime build",
+        "changes workspace",
+        "changes validate",
+        "changes export",
+        "dev open",
+        "dev status",
+        "dev patch",
+        "dev build",
+        "dev exec",
+        "dev explain",
+        "dev pin",
+        "dev prune",
+        "extension init",
+        "extension prepare",
+        "extension plan",
+        "extension build",
+        "publish plan",
+        "publish run",
+    }
+    return {
+        "capability_schema_version": "pg_play/capabilities/v1",
+        "contract_version": "pg_play/component/v1",
+        "component": "pg_maker",
+        "component_version": "0.5.0",
+        "machine_interface": MACHINE_INTERFACE,
+        "exit_codes": EXIT_CODES,
+        "secret_policy": {},
+        "commands": {
+            name: {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False}
+            for name in commands
+        },
+    }
+
+
 class Runner:
     def __init__(self):
         self.calls = []
 
     def run(self, invocation):
         self.calls.append(invocation)
+        if invocation.arguments == ("--component-capabilities",):
+            return {"status": "succeeded", "result": maker_capabilities()}
         return {"status": "succeeded", "result": {"operation_id": "build", "status": "running"}}
 
 
@@ -78,9 +132,9 @@ def test_start_freezes_reviewed_inputs_and_cancels_worker_directly(tmp_path):
     client = MakerClient(runner)
     plan = reviewed_plan()
     result = client.start(plan, plan["plan_hash"], tmp_path, "build")
-    assert "--detach" in runner.calls[0].arguments
-    assert "--skip-db-tests" in runner.calls[0].arguments
-    assert runner.calls[0].cancel_path is None
+    assert "--detach" in runner.calls[-1].arguments
+    assert "--skip-db-tests" in runner.calls[-1].arguments
+    assert runner.calls[-1].cancel_path is None
     assert result["build_plan_hash"] == "sha256:build"
     client.cancel(result["operation_directory"])
     assert runner.calls[-1].arguments == ("cancel", str(tmp_path / "build"))
@@ -88,7 +142,7 @@ def test_start_freezes_reviewed_inputs_and_cancels_worker_directly(tmp_path):
     changed["goal"] = "verified"
     with pytest.raises(MakerError, match="changed since review"):
         client.start(changed, plan["plan_hash"], tmp_path, "other")
-    assert len(runner.calls) == 2
+    assert len(runner.calls) == 3
 
 
 def test_same_operation_id_cannot_be_rebound(tmp_path):
@@ -109,10 +163,16 @@ def test_maker_plan_identity_is_independent_of_replanning_time(tmp_path):
         counter = 0
 
         def run(self, invocation):
+            if invocation.arguments == ("--component-capabilities",):
+                return {"status": "succeeded", "result": maker_capabilities()}
             self.counter += 1
             return {
                 "status": "succeeded",
-                "result": {"created_at": str(self.counter), "plan_hash": "sha256:build"},
+                "result": {
+                    "created_at": str(self.counter),
+                    "plan_hash": "sha256:build",
+                    "spec": {"run_db_tests": True},
+                },
             }
 
     client = MakerClient(PlanningRunner())
@@ -249,6 +309,7 @@ def test_experiment_runs_maker_before_stand_and_binds_actual_image_id(tmp_path, 
 
     runner = ExperimentRunner()
     service = PgPlayService(runner)
+    monkeypatch.setattr(service, "maker_runtime_check", lambda *a: {"compatible": True})
     monkeypatch.setattr(
         service, "component_capabilities", lambda _: {"pg_maker": {"component_version": "test"}}
     )

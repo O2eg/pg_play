@@ -2,15 +2,15 @@ api_version: pg_maker/feature/v1
 kind: FeatureProfile
 metadata:
   id: my-feature-stand
-  revision: 1
+  revision: 2
 spec:
   description: PostgreSQL with pg_stand diagnostic components
   numeric_id: null
   changes: []
   components:
   - ../../components/pg-stat-statements.yaml
-  - ../../components/pg-buffercache.yaml
-  - ../../components/auto-explain.yaml
+  # These recipes are supplied by pg-maker init; keep version/SDK policy there.
+  # pg_buffercache and auto_explain come from packaging.standard_contrib: true.
   - ../../components/pg-wait-sampling.yaml
   - ../../components/pg-stat-kcache.yaml
   build_options: {}

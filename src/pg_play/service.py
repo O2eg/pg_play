@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -144,7 +145,7 @@ class PgPlayService:
         self.runner = runner or ComponentRunner()
         self._execution_context: _ExecutionContext | None = None
 
-    @property
+    @cached_property
     def maker(self):
         from pg_play.maker import MakerClient
 
@@ -152,6 +153,81 @@ class PgPlayService:
 
     def maker_validate(self, manifest: str) -> dict:
         return self.maker.validate(manifest)
+
+    def maker_init(self, directory: str, profile: str | None = None) -> dict:
+        args = ("init", str(Path(directory).absolute()))
+        if profile is not None:
+            args += ("--profile", profile)
+        return self.maker.call(args)
+
+    def maker_config_show(self, manifest: str) -> dict:
+        return self.maker.call(("config", "show", str(Path(manifest).absolute())))
+
+    def maker_package_names(self, manifest: str) -> dict:
+        return self.maker.call(("package", "names", str(Path(manifest).absolute())))
+
+    def maker_extension_init(self, directory: str, extensions: list[str], **options) -> dict:
+        from pg_play.maker_packages import extension_init
+
+        return extension_init(self.maker, directory, extensions, **options)
+
+    def maker_extension_prepare(
+        self,
+        manifest: str,
+        output: str,
+        operations: str,
+        input_store: str,
+        operation_id: str,
+        offline: bool = False,
+    ) -> dict:
+        from pg_play.maker_packages import extension_prepare
+
+        return extension_prepare(
+            self.maker, manifest, output, operations, input_store, operation_id, offline=offline
+        )
+
+    def maker_extension_plan(self, lock: str) -> dict:
+        from pg_play.maker_packages import extension_plan
+
+        return extension_plan(self.maker, lock)
+
+    def maker_extension_build(
+        self,
+        lock: str,
+        operations: str,
+        operation_id: str,
+        input_store: str | None = None,
+        publish_config: str | None = None,
+    ) -> dict:
+        from pg_play.maker_packages import extension_build
+
+        return extension_build(
+            self.maker,
+            lock,
+            operations,
+            operation_id,
+            input_store=input_store,
+            publish_config=publish_config,
+        )
+
+    def maker_publish_plan(self, source: str, config: str) -> dict:
+        from pg_play.maker_packages import publish_plan
+
+        return publish_plan(self.maker, source, config)
+
+    def maker_publish_run(
+        self,
+        source: str,
+        config: str,
+        operations: str,
+        operation_id: str,
+        wait_for_source: bool = False,
+    ) -> dict:
+        from pg_play.maker_packages import publish_run
+
+        return publish_run(
+            self.maker, source, config, operations, operation_id, wait_for_source=wait_for_source
+        )
 
     def maker_dev_open(
         self,
@@ -276,7 +352,7 @@ class PgPlayService:
         lock: str,
         input_store: str | None = None,
         goal: str = "package",
-        run_db_tests: bool = False,
+        run_db_tests: bool | None = None,
     ) -> dict:
         return self.maker.plan(lock, input_store=input_store, goal=goal, run_db_tests=run_db_tests)
 
@@ -287,8 +363,16 @@ class PgPlayService:
         operations: str,
         operation_id: str,
         cache_store: str | None = None,
+        publish_config: str | None = None,
     ) -> dict:
-        return self.maker.start(plan, plan_hash, operations, operation_id, cache_store=cache_store)
+        return self.maker.start(
+            plan,
+            plan_hash,
+            operations,
+            operation_id,
+            cache_store=cache_store,
+            publish_config=publish_config,
+        )
 
     def maker_status(self, directory: str) -> dict:
         return self.maker.status(directory)
@@ -307,13 +391,18 @@ class PgPlayService:
     def maker_artifacts(self, directory: str) -> dict:
         return self.maker.artifacts(directory)
 
-    def maker_export(self, directory: str, output: str) -> dict:
-        return self.maker.export(directory, output)
+    def maker_export(self, directory: str, output: str, include_inputs: bool = False) -> dict:
+        return self.maker.export(directory, output, include_inputs=include_inputs)
 
     def maker_runtime_plan(self, artifacts: str, base_image: str, output: str) -> dict:
         from pg_play.maker_runtime import plan_runtime
 
         return plan_runtime(self.maker, artifacts, base_image, output)
+
+    def maker_runtime_check(self, plan: dict, variant: str, base_image: str) -> dict:
+        from pg_play.maker_runtime import check_runtime
+
+        return check_runtime(self.maker, plan, variant, base_image)
 
     def maker_changes_workspace(
         self,
@@ -844,6 +933,12 @@ class PgPlayService:
 
     def plan_experiment(self, manifest_path: str | Path) -> dict[str, Any]:
         manifest = load_manifest(manifest_path)
+        if manifest.maker is not None:
+            self.maker_runtime_check(
+                read_state(manifest.maker.plan),
+                manifest.maker.variant,
+                manifest.maker.runtime_base_image,
+            )
         base_config = load_config(
             self._stand_config(manifest),
             project_directory=manifest.stand_project,
