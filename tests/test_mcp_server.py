@@ -3,6 +3,13 @@ from __future__ import annotations
 import asyncio
 
 from pg_play.mcp_server import mcp
+from pg_play.version import __version__
+
+
+def test_mcp_handshake_advertises_the_pg_play_version() -> None:
+    options = mcp._mcp_server.create_initialization_options()
+
+    assert (options.server_name, options.server_version) == ("pg_play", __version__)
 
 
 def test_mcp_exposes_only_high_level_typed_operations() -> None:

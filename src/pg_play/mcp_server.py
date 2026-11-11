@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from pg_play.contract import ADVISORY_SEVERITIES, SUPPORTED_CONTRACT_VERSIONS
 from pg_play.service import PgPlayService
+from pg_play.version import __version__
 
 mcp = FastMCP(
     "pg_play",
@@ -31,6 +32,9 @@ mcp = FastMCP(
     ),
     json_response=True,
 )
+# FastMCP takes no version argument; without this the handshake advertises the
+# MCP SDK's version as the server version.
+mcp._mcp_server.version = __version__
 
 
 def _service() -> PgPlayService:

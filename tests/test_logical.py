@@ -113,6 +113,16 @@ def test_native_plan_hash_is_preserved(setup, tmp_path):
     assert (directory / "report.json").stat().st_mode & 0o777 == 0o600
 
 
+def test_reused_run_id_is_rejected_with_a_domain_error(setup, tmp_path):
+    manager, plan, directory = create(setup, tmp_path)
+    before = (directory / "state.json").read_bytes()
+
+    with pytest.raises(LogicalError, match="run_id run-1 already exists"):
+        manager.start(plan, plan["plan_hash"], tmp_path / "runs", "run-1")
+
+    assert (directory / "state.json").read_bytes() == before
+
+
 def test_modified_input_and_plan_rejected(setup):
     manager, _, config = setup
     plan = manager.plan(str(config), "controller")

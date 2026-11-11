@@ -17,6 +17,7 @@ from pg_play.runner import (
     ComponentCancelledError,
     ComponentInvocation,
     ComponentRunner,
+    process_boot_id,
     process_start_ticks,
     recorded_process_is_alive,
     terminate_recorded_process,
@@ -405,6 +406,7 @@ class ConverterRunManager:
         state["worker"] = {
             "pid": os.getpid(),
             "process_start_ticks": process_start_ticks(os.getpid()),
+            "boot_id": process_boot_id(),
             "started_at": utc_now(),
             "mode": "background",
         }
@@ -571,6 +573,7 @@ class ConverterRunManager:
             state["worker"] = {
                 "pid": process.pid,
                 "process_start_ticks": process_start_ticks(process.pid),
+                "boot_id": process_boot_id(),
                 "started_at": utc_now(),
                 "mode": "background",
             }

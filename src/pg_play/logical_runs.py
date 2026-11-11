@@ -90,6 +90,8 @@ class LogicalRunManager:
         ):
             raise LogicalError("Invalid run_id")
         directory = Path(output_directory).expanduser().resolve() / run_id
+        if directory.exists():
+            raise LogicalError(f"run_id {run_id} already exists")
         directory.mkdir(parents=True, exist_ok=False, mode=0o700)
         os.chmod(directory, 0o700)
         durable_json(directory / "plan.json", plan)

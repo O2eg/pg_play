@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -46,6 +47,7 @@ from pg_play.runner import (
     ComponentCancelledError,
     ComponentInvocation,
     ComponentRunner,
+    process_boot_id,
     process_start_ticks,
     recorded_process_is_alive,
     terminate_recorded_process,
@@ -1280,6 +1282,8 @@ class PgPlayService:
         state["state"] = "queued"
         state["worker"] = None
         state["error"] = None
+        # The request itself stays archived next to the state as attempt evidence.
+        state["cancellation"] = None
         state["resumed_at"] = utc_now()
         write_state(context.state_path, state)
         self._event(
@@ -1420,7 +1424,7 @@ class PgPlayService:
             self._begin_step(state, context, "stop-workload", cancellable=False)
             stop_result = self._invoke(
                 "pg_workload",
-                ("stop", "--root", str(manifest.workload.project)),
+                self._workload_stop_args(manifest, state),
                 request_id=f"{manifest.experiment_id}-{context.run_id}-cancel-stop-workload",
                 cancellable=False,
             )
@@ -1452,6 +1456,7 @@ class PgPlayService:
         state["worker"] = {
             "pid": os.getpid(),
             "process_start_ticks": process_start_ticks(os.getpid()),
+            "boot_id": process_boot_id(),
             "started_at": utc_now(),
             "mode": "background" if os.environ.get("PG_PLAY_WORKER") == "1" else "synchronous",
         }
@@ -1470,6 +1475,10 @@ class PgPlayService:
             self._latest_step_status(state, name) == "partial"
             for name in ("benchmark", "diagnostics")
         )
+        # The terminal state and its event are published only after the workload
+        # cleanup below: until then a reader must still see an active run.
+        outcome: str | None = None
+        terminal_event: tuple[str, dict[str, Any] | None] | None = None
         try:
             if manifest.maker is not None:
                 from pg_play.maker_experiment import execute_phase, phase_plan
@@ -1636,8 +1645,7 @@ class PgPlayService:
                     self._event(context, "step_reused", state="running", step="benchmark")
             if not manifest.phases.workload_diagnostics:
                 self._raise_if_cancelled(context, "experiment completion")
-                state["state"] = "partial" if partial_result else "succeeded"
-                write_state(state_path, state)
+                outcome = "partial" if partial_result else "succeeded"
                 return state
 
             common_args = self._workload_common_args(manifest, connection)
@@ -1702,6 +1710,21 @@ class PgPlayService:
                 not self._step_completed(state, "start-workload", run_directory) or resume
             )
             if should_start_workload:
+                if resume and self._workload_left_running(state):
+                    # pg_workload refuses a second scheduler, so stop the one an
+                    # interrupted attempt of this run left behind before restarting it.
+                    self._begin_step(state, context, "stop-workload")
+                    self._step(
+                        state,
+                        state_path,
+                        "stop-workload",
+                        self._invoke(
+                            "pg_workload",
+                            self._workload_stop_args(manifest, state),
+                            request_id=f"{manifest.experiment_id}-{run_id}-resume-stop-workload",
+                        ),
+                        {"succeeded", "blocked"},
+                    )
                 self._begin_step(state, context, "start-workload")
                 self._step(
                     state,
@@ -1754,8 +1777,7 @@ class PgPlayService:
             elif resume:
                 self._event(context, "step_reused", state="running", step="diagnostics")
             self._raise_if_cancelled(context, "experiment completion")
-            state["state"] = "partial" if partial_result else "succeeded"
-            write_state(state_path, state)
+            outcome = "partial" if partial_result else "succeeded"
             return state
         except ComponentCancelledError as exc:
             cancellation = (
@@ -1768,23 +1790,16 @@ class PgPlayService:
                 }
             )
             self._fail_running_step(state, context, "cancelled", str(exc))
-            state["state"] = "cancelled"
+            outcome = "cancelled"
             state["cancellation"] = cancellation
             state["error"] = {"code": "cancelled", "message": str(exc)}
-            write_state(state_path, state)
-            self._event(context, "run_cancelled", state="cancelled")
+            terminal_event = ("run_cancelled", None)
             return state
         except Exception as exc:
             self._fail_running_step(state, context, "failed", str(exc))
-            state["state"] = "failed"
+            outcome = "failed"
             state["error"] = {"code": "orchestration_error", "message": str(exc)}
-            write_state(state_path, state)
-            self._event(
-                context,
-                "run_failed",
-                state="failed",
-                data={"message": str(exc)},
-            )
+            terminal_event = ("run_failed", {"message": str(exc)})
             raise
         finally:
             if workload_stop_needed and manifest.workload.stop_after_report:
@@ -1792,7 +1807,7 @@ class PgPlayService:
                     self._begin_step(state, context, "stop-workload", cancellable=False)
                     stop_result = self._invoke(
                         "pg_workload",
-                        ("stop", "--root", str(manifest.workload.project)),
+                        self._workload_stop_args(manifest, state),
                         request_id=f"{manifest.experiment_id}-{run_id}-stop-workload",
                         cancellable=False,
                     )
@@ -1805,9 +1820,9 @@ class PgPlayService:
                     )
                     if (
                         stop_result["status"] not in {"succeeded", "blocked"}
-                        and state["state"] == "succeeded"
+                        and outcome == "succeeded"
                     ):
-                        state["state"] = "partial"
+                        outcome = "partial"
                         state["error"] = {
                             "code": "workload_stop_failed",
                             "message": (
@@ -1816,18 +1831,22 @@ class PgPlayService:
                         }
                 except Exception as stop_error:
                     self._fail_running_step(state, context, "failed", str(stop_error))
-                    if state["state"] == "succeeded":
-                        state["state"] = "partial"
+                    if outcome == "succeeded":
+                        outcome = "partial"
                         state["error"] = {
                             "code": "workload_stop_failed",
                             "message": (
                                 "diagnostics completed, but the workload could not be stopped"
                             ),
                         }
+            if outcome is not None:
+                state["state"] = outcome
             state["worker"] = None
             write_state(state_path, state)
-            if state.get("state") in {"succeeded", "partial"}:
-                self._event(context, "run_finished", state=state["state"])
+            if outcome in {"succeeded", "partial"}:
+                self._event(context, "run_finished", state=outcome)
+            elif terminal_event is not None:
+                self._event(context, terminal_event[0], state=outcome, data=terminal_event[1])
             self._execution_context = None
 
     def experiment_status(self, manifest_path: str | Path, run_id: str) -> dict[str, Any]:
@@ -2138,6 +2157,31 @@ class PgPlayService:
         step = cls._latest_step(state, name)
         return str(step.get("status")) if step is not None else None
 
+    def _workload_stop_args(self, manifest, state) -> tuple[str, ...]:
+        step = self._latest_step(state, "start-workload") or {}
+        identity = step.get("scheduler_identity")
+        # Missing evidence (including older runs) must never become an unguarded stop.
+        return (
+            "stop",
+            "--root",
+            str(manifest.workload.project),
+            "--expected-identity",
+            json.dumps(identity or {}),
+        )
+
+    @staticmethod
+    def _workload_left_running(state: dict[str, Any]) -> bool:
+        """Whether this run started a scheduler without recording a later stop."""
+        for step in reversed(state.get("steps") or []):
+            if step.get("name") == "stop-workload" and step.get("status") == "succeeded":
+                return False
+            if step.get("name") == "start-workload" and step.get("status") in {
+                "running",
+                "succeeded",
+            }:
+                return True
+        return False
+
     def _step_completed(
         self,
         state: dict[str, Any],
@@ -2270,6 +2314,7 @@ class PgPlayService:
             state["worker"] = {
                 "pid": process.pid,
                 "process_start_ticks": process_start_ticks(process.pid),
+                "boot_id": process_boot_id(),
                 "started_at": utc_now(),
                 "mode": "background",
             }
@@ -2994,8 +3039,6 @@ class PgPlayService:
         envelope: dict[str, Any],
         statuses: set[str],
     ) -> None:
-        self._require(envelope, statuses)
-        local_status = "partial" if envelope["status"] == "partial" else "succeeded"
         running = next(
             (
                 step
@@ -3004,6 +3047,17 @@ class PgPlayService:
             ),
             None,
         )
+        if envelope["status"] not in statuses and running is not None:
+            # Keep the component's own verdict: _fail_running_step completes this
+            # record after _require raises, and otherwise only the message survives.
+            running.update(
+                component=envelope["component"],
+                command=envelope["command"],
+                component_status=envelope["status"],
+                component_error=envelope.get("error"),
+            )
+        self._require(envelope, statuses)
+        local_status = "partial" if envelope["status"] == "partial" else "succeeded"
         record = self._step_record(name, envelope)
         record["status"] = local_status
         record["component_status"] = envelope["status"]
@@ -3029,6 +3083,11 @@ class PgPlayService:
     @staticmethod
     def _step_record(name: str, envelope: dict[str, Any]) -> dict[str, Any]:
         return {
+            **(
+                {"scheduler_identity": (envelope.get("result") or {}).get("identity")}
+                if name == "start-workload"
+                else {}
+            ),
             "name": name,
             "component": envelope["component"],
             "command": envelope["command"],

@@ -91,8 +91,8 @@ For a packaged maximum-TPS benchmark, use `workload_profile: imdb` or
 `workload_duration_seconds`, and `clients`. Omit
 `init_command`, `workload_command`, and `workload_path`; pg_perf_bench supplies
 and embeds the profile sources and exact commands. The newest local pgbench and
-matching psql are selected automatically. Set `system_metrics_interval: 5`
-explicitly: pg-play defaults to 1 second, which the minimum supported
-pg-perf-bench release rejects. Set `system_metrics_duration` only for a custom
+matching psql are selected automatically. `system_metrics_interval` defaults to
+5 seconds, the shortest interval pg-perf-bench accepts. Set
+`system_metrics_duration` only for a custom
 command which has no pgbench `-T` or `--time` option. The pg_diag OS sampler runs
 on the benchmark runner host during every measured workload window.

@@ -278,9 +278,8 @@ reviewed benchmark plan. `pg_perf_bench` selects the newest local pgbench/psql
 pair automatically; optional `pgbench_path` and `psql_path` overrides are
 accepted only when they are not older than the newest installed clients. The
 pg_diag OS sampler runs on the benchmark runner host during every benchmark
-window. Set `system_metrics_interval: 5` explicitly for compatibility with the
-minimum supported pg-perf-bench release, which rejects shorter intervals;
-pg-play's current implicit default is still 1 second. Use
+window. `system_metrics_interval` defaults to 5 seconds, the shortest interval
+pg-perf-bench accepts; a smaller value is rejected during validation. Use
 `system_metrics_duration` only when a custom command has no pgbench `-T` or
 `--time` option.
 
@@ -753,3 +752,10 @@ it, and publish pg-maker, pg-stand and pg-logical-repl updates before a pg-play
 release that requires their versions. Ordinary branch CI can exercise coordinated
 source changes before publication; tagged publishing jobs deliberately resolve
 components from PyPI and enforce this release order.
+
+Scheduler cleanup during resume, cancellation, and completion requires the identity
+returned by `pg-workload start` (PID, process start ticks, and OS boot ID). A
+replacement scheduler is not stopped. Older runs without this evidence cannot
+automatically stop a running scheduler; inspect it and stop it explicitly if
+appropriate. This requires a pg-workload version supporting `--expected-identity`;
+older versions reject the guarded stop instead of executing an unguarded one.

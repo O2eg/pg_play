@@ -176,6 +176,12 @@ def test_runtime_preflight_sends_unchanged_build_and_consumer_requirements(tmp_p
     assert paths and not paths[0].exists()
 
 
+@pytest.mark.parametrize("plan", [{}, {"schema_version": "pg_play/maker-plan-v1"}])
+def test_runtime_preflight_rejects_a_malformed_plan_with_a_domain_error(plan):
+    with pytest.raises(MakerError, match="maker plan"):
+        check_runtime(MakerClient(Runner()), plan, "variant", "sha256:" + "a" * 64)
+
+
 def test_cli_and_mcp_use_native_publication_adapter(tmp_path, monkeypatch, capsys):
     from pg_play import mcp_server
 

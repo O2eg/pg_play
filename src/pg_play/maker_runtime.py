@@ -12,7 +12,7 @@ from pg_play.state import write_json
 
 def check_runtime(client: MakerClient, plan: dict, variant: str, base_image: str) -> dict:
     """Maker validates its profiles; play only supplies the consumer requirements."""
-    checked_plan(plan, plan["plan_hash"])
+    checked_plan(plan, plan.get("plan_hash"))
     client.require("runtime check", "runtime plan", "runtime build", "artifacts")
     with TemporaryDirectory(prefix="pg-play-runtime-check-") as scratch:
         root = Path(scratch)

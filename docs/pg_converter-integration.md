@@ -35,6 +35,11 @@ plan_converter_run(
 )
 ```
 
+`project_directory` is resolved against the caller's working directory. A
+relative `config_file` follows pg_converter's own rule and is looked up inside
+`<project_directory>/conf`; pass an absolute path for a configuration kept
+elsewhere.
+
 The operation invokes only the non-connecting `pg-converter --plan` path.
 The result contains:
 

@@ -12,7 +12,12 @@ import yaml
 from pg_stand.config import load_config
 
 from pg_play.manifest import load_manifest
-from pg_play.runner import ComponentInvocation, process_start_ticks
+from pg_play.runner import (
+    ComponentCancelledError,
+    ComponentInvocation,
+    process_boot_id,
+    process_start_ticks,
+)
 from pg_play.service import OrchestrationError, PgPlayService
 from pg_play.state import RUN_STATE_SCHEMA_VERSION, read_events, write_state
 
@@ -273,7 +278,7 @@ def test_plan_includes_reviewed_benchmark_for_pg_stand(tmp_path: Path) -> None:
     assert call.arguments[call.arguments.index("--pgbench-clients") + 1] == "1,4"
     assert "--pgbench-path" not in call.arguments
     assert "--psql-path" not in call.arguments
-    assert call.arguments[call.arguments.index("--system-metrics-interval") + 1] == "1.0"
+    assert call.arguments[call.arguments.index("--system-metrics-interval") + 1] == "5.0"
 
 
 def test_plan_passes_bundled_benchmark_profile_without_manual_commands(tmp_path: Path) -> None:
@@ -510,6 +515,8 @@ def test_start_returns_after_launching_a_detached_worker(
 
     assert state["state"] == "queued"
     assert state["worker"]["mode"] == "background"
+    # a PID and start time alone cannot tell a live worker from one recorded before a reboot
+    assert state["worker"]["boot_id"] == process_boot_id()
     assert captured["command"][1:3] == ["-m", "pg_play.worker"]
     assert "--resume" not in captured["command"]
     assert captured["kwargs"]["start_new_session"] is True
@@ -638,6 +645,137 @@ def test_execution_rejects_changed_stand_desired_state(
     assert persisted["state"] == "failed"
 
 
+def test_failed_step_keeps_the_component_verdict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal = {"code": "execution_error", "message": "Resource guard blocked starting command"}
+
+    class RefusingRunner(FakeRunner):
+        def run(self, invocation: ComponentInvocation) -> dict[str, Any]:
+            response = super().run(invocation)
+            if invocation.component == "pg_workload" and invocation.arguments[0] == "prepare-db":
+                response.update(status="failed", error=refusal)
+            return response
+
+    service = PgPlayService(runner=RefusingRunner())  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        service,
+        "_credential_context",
+        lambda *_args: {"workload_password": "fixture", "admin_password": "fixture"},
+    )
+    manifest_path = _manifest(tmp_path)
+    plan = service.plan_experiment(manifest_path)
+
+    with pytest.raises(OrchestrationError, match="pg_workload .* returned failed"):
+        service.run_experiment(manifest_path, plan_hash=plan["plan_hash"], run_id="refused")
+
+    state = service.experiment_status(manifest_path, "refused")
+    step = service._latest_step(state, "prepare-db")
+    assert state["state"] == "failed"
+    assert step["status"] == "failed"
+    assert step["component"] == "pg_workload"
+    assert step["command"].startswith("prepare-db")
+    assert step["component_status"] == "failed"
+    assert step["component_error"] == refusal
+    assert step["error"]["code"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("cancel_diagnostics", "final_state", "final_event"),
+    [(False, "succeeded", "run_finished"), (True, "cancelled", "run_cancelled")],
+)
+def test_terminal_state_is_published_only_after_workload_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_diagnostics: bool,
+    final_state: str,
+    final_event: str,
+) -> None:
+    manifest_path = _manifest(tmp_path)
+    during_cleanup: list[str] = []
+
+    class ObservingRunner(FakeRunner):
+        def run(self, invocation: ComponentInvocation) -> dict[str, Any]:
+            if invocation.component == "pg_diag" and invocation.arguments[0] == "snapshots":
+                if cancel_diagnostics:
+                    raise ComponentCancelledError("pg_diag cancelled by experiment request")
+            response = super().run(invocation)
+            if invocation.component == "pg_workload" and invocation.arguments[0] == "start":
+                response["status"] = "running"
+            if invocation.component == "pg_workload" and invocation.arguments[0] == "stop":
+                during_cleanup.append(service.experiment_status(manifest_path, "ordered")["state"])
+            return response
+
+    service = PgPlayService(runner=ObservingRunner())  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        service,
+        "_credential_context",
+        lambda *_args: {"workload_password": "fixture", "admin_password": "fixture"},
+    )
+    plan = service.plan_experiment(manifest_path)
+
+    result = service.run_experiment(manifest_path, plan_hash=plan["plan_hash"], run_id="ordered")
+
+    assert during_cleanup == ["running"]
+    assert result["state"] == final_state
+    assert service.experiment_status(manifest_path, "ordered")["state"] == final_state
+    context = service._run_context(load_manifest(manifest_path), "ordered")
+    events = [
+        (event["type"], event["step"]) for event in read_events(context.events_path)["events"]
+    ]
+    assert events[-2:] == [("step_completed", "stop-workload"), (final_event, None)]
+
+
+def test_resume_stops_the_scheduler_left_by_an_interrupted_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {"pid": 123, "start_ticks": 456, "boot_id": "boot-A"}
+
+    class RunningRunner(FakeRunner):
+        def run(self, invocation: ComponentInvocation) -> dict[str, Any]:
+            response = super().run(invocation)
+            if invocation.component == "pg_workload" and invocation.arguments[0] == "stop":
+                args = invocation.arguments
+                assert json.loads(args[args.index("--expected-identity") + 1]) == identity
+            if invocation.component == "pg_workload" and invocation.arguments[0] == "start":
+                response["status"] = "running"
+                response["result"] = {"identity": identity}
+            return response
+
+    service, _manifest_path, manifest, plan, state = _create_durable_run(tmp_path)
+    service.runner = RunningRunner()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        service,
+        "_credential_context",
+        lambda *_args: {"workload_password": "fixture", "admin_password": "fixture"},
+    )
+    context = service._run_context(manifest, state["run_id"])
+    state["state"] = "interrupted"
+    state["steps"] = [
+        {
+            "name": "start-workload",
+            "status": "succeeded",
+            "attempt": 1,
+            "resume_policy": "desired_state",
+            "artifacts": [],
+            "scheduler_identity": identity,
+        }
+    ]
+    write_state(context.state_path, state)
+
+    result = service._execute_experiment(manifest, plan, state, resume=True)
+
+    assert result["state"] == "succeeded"
+    lifecycle = [
+        call.arguments[0]
+        for call in service.runner.invocations
+        if call.component == "pg_workload" and call.arguments[0] in {"start", "stop"}
+    ]
+    assert lifecycle == ["stop", "start", "stop"]
+
+
 def test_resume_rejects_changed_stand_desired_state_before_spawning_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -713,6 +851,28 @@ def test_resume_invalidates_missing_artifacts_and_retries_only_allowlisted_step(
         "step_artifacts_invalidated",
         "resume_requested",
     ]
+
+
+def test_resume_clears_the_cancellation_of_the_previous_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, manifest_path, manifest, plan, state = _create_durable_run(tmp_path)
+    context = service._run_context(manifest, state["run_id"])
+    state["state"] = "interrupted"
+    write_state(context.state_path, state)
+    cancelled = service.cancel_experiment(manifest_path, state["run_id"], reason="operator stop")
+    assert cancelled["cancellation"]["reason"] == "operator stop"
+    monkeypatch.setattr(service, "_spawn_worker", lambda _manifest, queued, *, resume: queued)
+
+    result = service.resume_experiment(
+        manifest_path,
+        plan_hash=plan["plan_hash"],
+        run_id=state["run_id"],
+    )
+
+    assert (result["state"], result["error"], result["cancellation"]) == ("queued", None, None)
+    assert (context.run_directory / "cancel.request.attempt-1.json").is_file()
 
 
 def test_resume_rejects_a_step_without_an_exact_safe_policy(tmp_path: Path) -> None:
@@ -804,3 +964,65 @@ def test_resume_rejects_changed_component_versions(
             plan_hash=plan["plan_hash"],
             run_id=state["run_id"],
         )
+
+
+@pytest.mark.parametrize("identity", [None, {"pid": 123, "start_ticks": 456, "boot_id": "boot-A"}])
+def test_resume_refuses_to_stop_replacement_workload(tmp_path, monkeypatch, identity):
+    class GuardedRunner(FakeRunner):
+        def run(self, invocation):
+            response = super().run(invocation)
+            if invocation.component == "pg_workload" and invocation.arguments[0] == "stop":
+                args = invocation.arguments
+                assert json.loads(args[args.index("--expected-identity") + 1]) == (identity or {})
+                response.update(
+                    status="failed",
+                    error={
+                        "code": "ownership_error",
+                        "message": "Scheduler identity differs",
+                    },
+                )
+            return response
+
+    service, _, manifest, plan, state = _create_durable_run(tmp_path)
+    service.runner = GuardedRunner()
+    monkeypatch.setattr(
+        service,
+        "_credential_context",
+        lambda *_: {
+            "workload_password": "fixture",
+            "admin_password": "fixture",
+        },
+    )
+    state["state"] = "interrupted"
+    state["steps"] = [
+        {
+            "name": "start-workload",
+            "status": "succeeded",
+            "attempt": 1,
+            "resume_policy": "desired_state",
+            "artifacts": [],
+            "scheduler_identity": identity,
+        }
+    ]
+    context = service._run_context(manifest, state["run_id"])
+    write_state(context.state_path, state)
+    with pytest.raises(OrchestrationError):
+        service._execute_experiment(manifest, plan, state, resume=True)
+    assert not any(
+        i.component == "pg_workload" and i.arguments[0] == "start"
+        for i in service.runner.invocations
+    )
+    assert json.loads(context.state_path.read_text())["state"] == "failed"
+
+
+def test_start_step_preserves_scheduler_identity():
+    identity = {"pid": 123, "start_ticks": 456, "boot_id": "boot-A"}
+    envelope = {
+        "component": "pg_workload",
+        "command": "start",
+        "status": "running",
+        "result": {"identity": identity},
+        "warnings": [],
+        "error": None,
+    }
+    assert PgPlayService._step_record("start-workload", envelope)["scheduler_identity"] == identity

@@ -533,7 +533,7 @@ def load_manifest(path: str | Path) -> ExperimentManifest:
                 "spec.benchmark.command_timeout",
             ),
             system_metrics_interval=_positive_float(
-                benchmark_raw.get("system_metrics_interval", 1),
+                benchmark_raw.get("system_metrics_interval", 5),
                 "spec.benchmark.system_metrics_interval",
             ),
             system_metrics_duration=(
